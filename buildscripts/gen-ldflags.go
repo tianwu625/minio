@@ -87,13 +87,13 @@ func commitTime() time.Time {
 		err        error
 	)
 	cmdName := "git"
-	cmdArgs := []string{"log", "--format=%cI", "-n1"}
+	cmdArgs := []string{"log", "--format=%cD", "-n1"}
 	if commitUnix, err = exec.Command(cmdName, cmdArgs...).Output(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error generating git commit-time: ", err)
 		os.Exit(1)
 	}
 
-	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(commitUnix)))
+	t, err := time.Parse(time.RFC1123Z, strings.TrimSpace(string(commitUnix)))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error generating git commit-time: ", err)
 		os.Exit(1)
