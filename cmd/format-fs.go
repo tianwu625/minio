@@ -200,7 +200,7 @@ func initFormatFS(ctx context.Context, fsPath string) (rlk *lock.RLockedFile, er
 	// Any write on format.json should be done with write-lock.
 	for {
 		isEmpty := false
-		rlk, err := lock.RLockedOpenFile(fsFormatPath)
+		rlk, err := lock.RLockedOpenFile(fsFormatPath, lock.LockedOpenFile)
 		if err == nil {
 			// format.json can be empty in a rare condition when another
 			// minio process just created the file but could not hold lock
@@ -284,6 +284,129 @@ func initFormatFS(ctx context.Context, fsPath string) (rlk *lock.RLockedFile, er
 	}
 }
 
+// Creates a new format.json if unformatted.
+func createFormatOPFS(fsFormatPath string) error {
+	// Attempt a write lock on formatConfigFile `format.json`
+	// file stored in minioMetaBucket(.minio.sys) directory.
+	lk, err := lock.TryLockedOpfsOpenFile(fsFormatPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	// Close the locked file upon return.
+	defer lk.Close()
+
+	fi, err := lk.Stat()
+	if err != nil {
+		return err
+	}
+	if fi.Size() != 0 {
+		// format.json already got created because of another minio process's createFormatFS()
+		return nil
+	}
+
+	return jsonSave(lk.File, newFormatFSV1())
+}
+// This function returns a read-locked format.json reference to the caller.
+// The file descriptor should be kept open throughout the life
+// of the process so that another minio process does not try to
+// migrate the backend when we are actively working on the backend.
+func initFormatOPFS(ctx context.Context, fsPath string) (rlk *lock.RLockedFile, err error) {
+	lock.OpfsCinit(fsPath)
+
+	fsFormatPath := pathJoin(fsPath, minioMetaBucket, formatConfigFile)
+
+	// Add a deployment ID, if it does not exist.
+	if err := formatOPFSFixDeploymentID(ctx, fsFormatPath); err != nil {
+		return nil, err
+	}
+
+	// Any read on format.json should be done with read-lock.
+	// Any write on format.json should be done with write-lock.
+	for {
+		isEmpty := false
+		rlk, err := lock.RLockedOpenFile(fsFormatPath, lock.LockedOpfsOpenFile)
+		if err == nil {
+			// format.json can be empty in a rare condition when another
+			// minio process just created the file but could not hold lock
+			// and write to it.
+			var fi os.FileInfo
+			fi, err = rlk.Stat()
+			if err != nil {
+				return nil, err
+			}
+			isEmpty = fi.Size() == 0
+		}
+		if osIsNotExist(err) || isEmpty {
+			if err == nil {
+				rlk.Close()
+			}
+			// Fresh disk - create format.json
+			err = createFormatOPFS(fsFormatPath)
+			if err == lock.ErrAlreadyLocked {
+				// Lock already present, sleep and attempt again.
+				// Can happen in a rare situation when a parallel minio process
+				// holds the lock and creates format.json
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			// After successfully creating format.json try to hold a read-lock on
+			// the file.
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		formatBackend, err := formatMetaGetFormatBackendFS(rlk)
+		if err != nil {
+			return nil, err
+		}
+		if formatBackend != formatBackendFS {
+			return nil, fmt.Errorf(`%s file: expected format-type: %s, found: %s`, formatConfigFile, formatBackendFS, formatBackend)
+		}
+		version, err := formatFSGetVersion(rlk)
+		if err != nil {
+			return nil, err
+		}
+		if version != formatFSVersionV2 {
+			// Format needs migration
+			rlk.Close()
+			// Hold write lock during migration so that we do not disturb any
+			// minio processes running in parallel.
+			var wlk *lock.LockedFile
+			wlk, err = lock.TryLockedOpfsOpenFile(fsFormatPath, os.O_RDWR, 0)
+			if err == lock.ErrAlreadyLocked {
+				// Lock already present, sleep and attempt again.
+				time.Sleep(100 * time.Millisecond)
+				logger.Info("sleep 100")
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			err = formatFSMigrate(ctx, wlk, fsPath)
+			wlk.Close()
+			if err != nil {
+				// Migration failed, bail out so that the user can observe what happened.
+				return nil, err
+			}
+			// Successfully migrated, now try to hold a read-lock on format.json
+			logger.Info("do migrate but maybe nothing change ")
+			continue
+		}
+		var id string
+		if id, err = formatFSGetDeploymentID(rlk); err != nil {
+			rlk.Close()
+			return nil, err
+		}
+		globalDeploymentID = id
+		return rlk, nil
+	}
+}
+
 func formatFSGetDeploymentID(rlk *lock.RLockedFile) (id string, err error) {
 	format := &formatFS{}
 	if err := jsonLoad(rlk, format); err != nil {
@@ -294,7 +417,7 @@ func formatFSGetDeploymentID(rlk *lock.RLockedFile) (id string, err error) {
 
 // Generate a deployment ID if one does not exist already.
 func formatFSFixDeploymentID(ctx context.Context, fsFormatPath string) error {
-	rlk, err := lock.RLockedOpenFile(fsFormatPath)
+	rlk, err := lock.RLockedOpenFile(fsFormatPath, lock.LockedOpenFile)
 	if err == nil {
 		// format.json can be empty in a rare condition when another
 		// minio process just created the file but could not hold lock
@@ -358,6 +481,95 @@ func formatFSFixDeploymentID(ctx context.Context, fsFormatPath string) error {
 			return fmt.Errorf("Initializing FS format stopped gracefully")
 		default:
 			wlk, err = lock.TryLockedOpenFile(fsFormatPath, os.O_RDWR, 0)
+			if err == lock.ErrAlreadyLocked {
+				// Lock already present, sleep and attempt again
+				logger.Info("Another minio process(es) might be holding a lock to the file %s. Please kill that minio process(es) (elapsed %s)\n", fsFormatPath, getElapsedTime())
+				time.Sleep(time.Duration(r.Float64() * float64(5*time.Second)))
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		}
+		stop = true
+	}
+	defer wlk.Close()
+
+	if err = jsonLoad(wlk, format); err != nil {
+		return err
+	}
+
+	// Check if format needs to be updated
+	if format.ID != "" {
+		return nil
+	}
+
+	// Set new UUID to the format and save it
+	format.ID = mustGetUUID()
+	return jsonSave(wlk, format)
+}
+
+func formatOPFSFixDeploymentID(ctx context.Context, fsFormatPath string) error {
+	rlk, err := lock.RLockedOpenFile(fsFormatPath, lock.LockedOpfsOpenFile)
+	if err == nil {
+		// format.json can be empty in a rare condition when another
+		// minio process just created the file but could not hold lock
+		// and write to it.
+		var fi os.FileInfo
+		fi, err = rlk.Stat()
+		if err != nil {
+			rlk.Close()
+			return err
+		}
+		if fi.Size() == 0 {
+			rlk.Close()
+			return nil
+		}
+	}
+	if osIsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	formatBackend, err := formatMetaGetFormatBackendFS(rlk)
+	if err != nil {
+		rlk.Close()
+		return err
+	}
+	if formatBackend != formatBackendFS {
+		rlk.Close()
+		return fmt.Errorf(`%s file: expected format-type: %s, found: %s`, formatConfigFile, formatBackendFS, formatBackend)
+	}
+
+	format := &formatFS{}
+	err = jsonLoad(rlk, format)
+	rlk.Close()
+	if err != nil {
+		return err
+	}
+
+	// Check if it needs to be updated
+	if format.ID != "" {
+		return nil
+	}
+
+	formatStartTime := time.Now().Round(time.Second)
+	getElapsedTime := func() string {
+		return time.Now().Round(time.Second).Sub(formatStartTime).String()
+	}
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	var wlk *lock.LockedFile
+	var stop bool
+	for !stop {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("Initializing FS format stopped gracefully")
+		default:
+			wlk, err = lock.TryLockedOpfsOpenFile(fsFormatPath, os.O_RDWR, 0)
 			if err == lock.ErrAlreadyLocked {
 				// Lock already present, sleep and attempt again
 				logger.Info("Another minio process(es) might be holding a lock to the file %s. Please kill that minio process(es) (elapsed %s)\n", fsFormatPath, getElapsedTime())
