@@ -23,6 +23,7 @@ import (
 	"errors"
 	"os"
 	"sync"
+	"io"
 )
 
 // ErrAlreadyLocked is returned if the underlying fd is already locked.
@@ -84,8 +85,8 @@ func newRLockedFile(lkFile *LockedFile) (*RLockedFile, error) {
 
 // RLockedOpenFile - returns a wrapped read locked file, if the file
 // doesn't exist at path returns an error.
-func RLockedOpenFile(path string) (*RLockedFile, error) {
-	lkFile, err := LockedOpenFile(path, os.O_RDONLY, 0o666)
+func RLockedOpenFile(path string, lockedOpenFile func (path string, flag int, perm os.FileMode)(*LockedFile, error)) (*RLockedFile, error) {
+	lkFile, err := lockedOpenFile(path, os.O_RDONLY, 0o666)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +94,49 @@ func RLockedOpenFile(path string) (*RLockedFile, error) {
 	return newRLockedFile(lkFile)
 }
 
+type LockedFileInterface interface {
+	io.ReaderAt
+	io.Reader
+	io.Writer
+	io.Seeker
+	Stat()(os.FileInfo, error)
+	Truncate(int64) error
+	io.Closer
+	Name() string
+}
 // LockedFile represents a locked file
 type LockedFile struct {
-	*os.File
+	File LockedFileInterface
+}
+
+func (l *LockedFile) Read (p []byte) (n int, err error) {
+	return l.File.Read(p)
+}
+
+func (l *LockedFile) Seek(offset int64, whence int) (int64, error) {
+	return l.File.Seek(offset, whence)
+}
+
+func (l *LockedFile) Close() error {
+	return l.File.Close()
+}
+
+func (l *LockedFile) ReadAt(p []byte, off int64) (n int, err error) {
+	return l.File.ReadAt(p, off)
+}
+
+func (l *LockedFile) Write(p []byte) (n int, err error) {
+	return l.File.Write(p)
+}
+
+func (l *LockedFile) Stat()(os.FileInfo, error) {
+	return l.File.Stat()
+}
+
+func (l *LockedFile) Truncate(size int64) error {
+	return l.File.Truncate(size)
+}
+
+func (l *LockedFile) Name() string {
+	return l.File.Name()
 }

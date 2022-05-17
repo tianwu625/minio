@@ -91,7 +91,65 @@ func (fsi *fsIOPool) Open(path string) (*lock.RLockedFile, error) {
 	// Locked path reference doesn't exist, acquire a read lock again on the file.
 	if !ok {
 		// Open file for reading with read lock.
-		newRlkFile, err := lock.RLockedOpenFile(path)
+		newRlkFile, err := lock.RLockedOpenFile(path, lock.LockedOpenFile)
+		if err != nil {
+			switch {
+			case osIsNotExist(err):
+				return nil, errFileNotFound
+			case osIsPermission(err):
+				return nil, errFileAccessDenied
+			case isSysErrIsDir(err):
+				return nil, errIsNotRegular
+			case isSysErrNotDir(err):
+				return nil, errFileAccessDenied
+			case isSysErrPathNotFound(err):
+				return nil, errFileNotFound
+			default:
+				return nil, err
+			}
+		}
+
+		// Save new reader on the map.
+
+		// It is possible by this time due to concurrent
+		// i/o we might have another lock present. Lookup
+		// again to check for such a possibility. If no such
+		// file exists save the newly opened fd, if not
+		// reuse the existing fd and close the newly opened
+		// file
+		fsi.Lock()
+		rlkFile, ok = fsi.lookupToRead(path)
+		if ok {
+			// Close the new fd, since we already seem to have
+			// an active reference.
+			newRlkFile.Close()
+		} else {
+			// Save the new rlk file.
+			rlkFile = newRlkFile
+		}
+
+		// Save the new fd on the map.
+		fsi.readersMap[path] = rlkFile
+		fsi.Unlock()
+
+	}
+
+	// Success.
+	return rlkFile, nil
+}
+
+func (fsi *fsIOPool) OpfsOpen(path string) (*lock.RLockedFile, error) {
+	if err := checkPathLength(path); err != nil {
+		return nil, err
+	}
+
+	fsi.Lock()
+	rlkFile, ok := fsi.lookupToRead(path)
+	fsi.Unlock()
+	// Locked path reference doesn't exist, acquire a read lock again on the file.
+	if !ok {
+		// Open file for reading with read lock.
+		newRlkFile, err := lock.RLockedOpenFile(path, lock.LockedOpfsOpenFile)
 		if err != nil {
 			switch {
 			case osIsNotExist(err):
@@ -167,6 +225,29 @@ func (fsi *fsIOPool) Write(path string) (wlk *lock.LockedFile, err error) {
 	return wlk, nil
 }
 
+func (fsi *fsIOPool) OpfsWrite(path string) (wlk *lock.LockedFile, err error) {
+	if err = checkPathLength(path); err != nil {
+		return nil, err
+	}
+
+	wlk, err = lock.LockedOpfsOpenFile(path, os.O_RDWR, 0o666)
+	if err != nil {
+		switch {
+		case osIsNotExist(err):
+			return nil, errFileNotFound
+		case osIsPermission(err):
+			return nil, errFileAccessDenied
+		case isSysErrIsDir(err):
+			return nil, errIsNotRegular
+		default:
+			if isSysErrPathNotFound(err) {
+				return nil, errFileNotFound
+			}
+			return nil, err
+		}
+	}
+	return wlk, nil
+}
 // Create - creates a new write locked file instance.
 // - if the file doesn't exist. We create the file and hold lock.
 func (fsi *fsIOPool) Create(path string) (wlk *lock.LockedFile, err error) {
@@ -198,6 +279,34 @@ func (fsi *fsIOPool) Create(path string) (wlk *lock.LockedFile, err error) {
 	return wlk, nil
 }
 
+func (fsi *fsIOPool) OpfsCreate(path string) (wlk *lock.LockedFile, err error) {
+	if err = checkPathLength(path); err != nil {
+		return nil, err
+	}
+
+	// Creates parent if missing.
+	if err = opfsMkdirAll(pathutil.Dir(path), 0o777); err != nil {
+		return nil, err
+	}
+
+	// Attempt to create the file.
+	wlk, err = lock.LockedOpfsOpenFile(path, os.O_RDWR|os.O_CREATE, 0o666)
+	if err != nil {
+		switch {
+		case osIsPermission(err):
+			return nil, errFileAccessDenied
+		case isSysErrIsDir(err):
+			return nil, errIsNotRegular
+		case isSysErrPathNotFound(err):
+			return nil, errFileAccessDenied
+		default:
+			return nil, err
+		}
+	}
+
+	// Success.
+	return wlk, nil
+}
 // Close implements closing the path referenced by the reader in such
 // a way that it makes sure to remove entry from the map immediately
 // if no active readers are present.
