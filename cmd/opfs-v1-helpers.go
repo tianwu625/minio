@@ -1,4 +1,5 @@
 package cmd
+
 //#cgo CFLAGS: -I /usr/include
 //#cgo LDFLAGS: -L /usr/lib64 -lofapi
 //#include <sys/time.h>
@@ -9,26 +10,26 @@ import "C"
 
 import (
 	"context"
-	"path/filepath"
 	"errors"
 	"fmt"
+	"path/filepath"
 	//"os/exec"
-	"strings"
+	"io"
 	iofs "io/fs"
-	"time"
 	"os"
 	pathutil "path"
-	"io"
-	"unsafe"
-	"syscall"
 	"runtime"
+	"strings"
 	"sync"
+	"syscall"
+	"time"
+	"unsafe"
 
 	xioutil "github.com/minio/minio/internal/ioutil"
 	"github.com/minio/minio/internal/lock"
 	"github.com/minio/minio/internal/logger"
 )
-//ofapi error for open dir failed
+
 var errOpenFailed = errors.New("Open file failed")
 var errCreateFailed = errors.New("Create bucket failed")
 var errRemoveFailed = errors.New("Remove bucket failed")
@@ -44,6 +45,7 @@ type opfsCroot struct {
 }
 
 var root opfsCroot
+
 /*
 //FIXME just for test and demo
 func getShare(fspath string) (sharename string) {
@@ -56,7 +58,7 @@ func getShare(fspath string) (sharename string) {
         return strings.Trim(string(names[1]), "\n")
 }
 */
-func opfsCinit (fsPath string) (err error) {
+func opfsCinit(fsPath string) (err error) {
 	root.fs = C.ofapi_init(C.CString("localhost"), C.int(1306), C.int(1), C.CString("/dev/null"))
 	//FIXME only for test and demo
 	//root.fspath = fsPath
@@ -105,7 +107,7 @@ func opfsMkdir(ctx context.Context, dirPath string) (err error) {
 	ret := C.ofapi_mkdirat(parentfd, cBucketName, 0777)
 	if ret != C.int(0) {
 		logger.LogIf(ctx, errors.New(fmt.Sprintf("create dir %s/%s ret %d",
-			     parentdir, bucketname, int(ret))))
+			parentdir, bucketname, int(ret))))
 		return errCreateFailed
 	}
 
@@ -135,10 +137,9 @@ func opfsRemoveFile(ctx context.Context, filePath string) (err error) {
 	ret := C.ofapi_unlinkat(parentfd, cFileName)
 	if ret != C.int(0) && ret != C.int(-2) {
 		logger.LogIf(ctx, errors.New(fmt.Sprintf("remove path %s/%s ret %d",
-			     parentdir, filename, int(ret))))
+			parentdir, filename, int(ret))))
 		return errRemoveFailed
 	}
-
 
 	return err
 }
@@ -167,14 +168,14 @@ func opfsRemoveDir(ctx context.Context, dirPath string) (err error) {
 	ret := C.ofapi_rmdirat(parentfd, cBucketName)
 	if ret != C.int(0) {
 		logger.LogIf(ctx, errors.New(fmt.Sprintf("remove dir %s/%s ret %d",
-			     parentdir, bucketname, int(ret))))
+			parentdir, bucketname, int(ret))))
 		return errRemoveFailed
 	}
 
 	return nil
 }
 
-func opfsRename(srcPath, dstPath string)(err error) {
+func opfsRename(srcPath, dstPath string) (err error) {
 	//FIXME only for test and demo
 	//srcPath = strings.ReplaceAll(srcPath, root.fspath, root.rootpath)
 	//dstPath = strings.ReplaceAll(dstPath, root.fspath, root.rootpath)
@@ -199,7 +200,7 @@ func opfsRename(srcPath, dstPath string)(err error) {
 	ret := C.ofapi_renameat(srcParentfd, cSrcBucket, dstParentfd, cDstBucket)
 	if ret != C.int(0) {
 		logger.LogIf(nil, errors.New(fmt.Sprintf("rename %s/%s to %s/%s ret %d",
-			     srcParent, srcBucket, dstParent, dstBucket, int(ret))))
+			srcParent, srcBucket, dstParent, dstBucket, int(ret))))
 		return errOpenFailed
 	}
 
@@ -208,14 +209,14 @@ func opfsRename(srcPath, dstPath string)(err error) {
 
 func opfsRemoveAll(ctx context.Context, dirPath string) (err error) {
 	if dirPath == "" {
-                logger.LogIf(ctx, errInvalidArgument)
-                return errInvalidArgument
-        }
+		logger.LogIf(ctx, errInvalidArgument)
+		return errInvalidArgument
+	}
 
-        if err = checkPathLength(dirPath); err != nil {
-                logger.LogIf(ctx, err)
-                return err
-        }
+	if err = checkPathLength(dirPath); err != nil {
+		logger.LogIf(ctx, err)
+		return err
+	}
 	//remove all things
 	dirPath = strings.TrimSuffix(dirPath, SlashSeparator)
 	fd, err := opfsCopen(dirPath)
@@ -237,7 +238,7 @@ func opfsRemoveAll(ctx context.Context, dirPath string) (err error) {
 	defer C.ofapi_close(parentfd)
 	cfilename := C.CString(name)
 	defer C.free(unsafe.Pointer(cfilename))
-	if uint32(oatt.oa_mode) & uint32(C.S_IFDIR) != 0 {
+	if uint32(oatt.oa_mode)&uint32(C.S_IFDIR) != 0 {
 		var dent C.struct_dirent
 		for {
 			ret := C.ofapi_readdirp(fd, &dent, &oatt)
@@ -245,8 +246,8 @@ func opfsRemoveAll(ctx context.Context, dirPath string) (err error) {
 				break
 			}
 			if C.GoString(&dent.d_name[0]) == "." ||
-			   C.GoString(&dent.d_name[0]) == ".." {
-			   continue
+				C.GoString(&dent.d_name[0]) == ".." {
+				continue
 			}
 			childPath := fmt.Sprintf("%s/%s", dirPath, C.GoString(&dent.d_name[0]))
 			err = opfsRemoveAll(ctx, childPath)
@@ -258,14 +259,14 @@ func opfsRemoveAll(ctx context.Context, dirPath string) (err error) {
 		ret := C.ofapi_rmdirat(parentfd, cfilename)
 		if ret != C.int(0) {
 			logger.LogIf(nil, errors.New(fmt.Sprintf("rmdir failed %s/%s ret %d",
-				     parentDir, name, int(ret))))
+				parentDir, name, int(ret))))
 			return errRemoveFailed
 		}
 	} else {
 		ret := C.ofapi_unlinkat(parentfd, cfilename)
 		if ret != C.int(0) {
 			logger.LogIf(nil, errors.New(fmt.Sprintf("unlink failed %s/%s ret %d",
-				     parentDir, name, int(ret))))
+				parentDir, name, int(ret))))
 			return errRemoveFailed
 		}
 	}
@@ -295,19 +296,19 @@ func opfsReadDirWithOpts(dirPath string, opts readDirOpts) (entries []string, er
 		}
 
 		if C.GoString(&dent.d_name[0]) == "." ||
-		   C.GoString(&dent.d_name[0]) == ".." {
+			C.GoString(&dent.d_name[0]) == ".." {
 			continue
 		}
 		var nameStr string
 		switch int(dent.d_type) {
-		case 1://file regular
+		case 1: //file regular
 			nameStr = C.GoString(&dent.d_name[0])
 		case 2:
 			nameStr = C.GoString(&dent.d_name[0])
 			nameStr += SlashSeparator
 		default:
 			logger.LogIf(nil, errors.New(fmt.Sprintf("type %d name %s",
-				     int(dent.d_type), C.GoString(&dent.d_name[0]))))
+				int(dent.d_type), C.GoString(&dent.d_name[0]))))
 		}
 		count--
 		entries = append(entries, nameStr)
@@ -331,7 +332,7 @@ func (ofi opfsInfo) Size() int64 {
 
 func (ofi opfsInfo) Mode() iofs.FileMode {
 	var filemode iofs.FileMode
-	switch  {
+	switch {
 	case (ofi.stat.oa_mode & C.S_IFDIR) != 0:
 		filemode |= iofs.ModeDir
 	case (ofi.stat.oa_mode & C.S_IFCHR) != 0:
@@ -351,7 +352,7 @@ func (ofi opfsInfo) Mode() iofs.FileMode {
 	if (ofi.stat.oa_mode & C.S_ISGID) != 0 {
 		filemode |= iofs.ModeSetgid
 	}
-	if (ofi.stat.oa_mode & C.S_ISVTX) != 0{
+	if (ofi.stat.oa_mode & C.S_ISVTX) != 0 {
 		filemode |= iofs.ModeSticky
 	}
 
@@ -395,7 +396,7 @@ func opfsStatVolume(ctx context.Context, volume string) (os.FileInfo, error) {
 	}
 
 	if !ofi.IsDir() {
-		return nil,errVolumeAccessDenied
+		return nil, errVolumeAccessDenied
 	}
 
 	return ofi, nil
@@ -425,6 +426,7 @@ func opfsStatFile(ctx context.Context, statFile string) (os.FileInfo, error) {
 
 	return ofi, nil
 }
+
 /*
 //FIXME only for go test
 func opfsIsFile(ctx context.Context, filePath string) bool {
@@ -459,7 +461,7 @@ func opfsMkdirAll(path string, mode os.FileMode) error {
 			defer C.free(unsafe.Pointer(cName))
 			ret = C.ofapi_mkdirat(pfd, cName, 0777)
 			if ret != C.int(0) {
-				logger.LogIf(nil,errors.New(fmt.Sprintf("mkdir failed %s/%s, ret %d", p.String(), s, int(ret))))
+				logger.LogIf(nil, errors.New(fmt.Sprintf("mkdir failed %s/%s, ret %d", p.String(), s, int(ret))))
 				return errCreateFailed
 			}
 		} else {
@@ -509,17 +511,17 @@ func opfsRenameFile(ctx context.Context, sourcePath, destPath string) error {
 }
 
 type opfsFile struct {
-	fd *C.ofapi_fd_t
+	fd     *C.ofapi_fd_t
 	offset int64
-	flags int
-	name string
-	mutex sync.Mutex
+	flags  int
+	name   string
+	mutex  sync.Mutex
 }
 
 var _zero uintptr
 
 func (opf *opfsFile) Write(p []byte) (n int, err error) {
-	if opf.flags & syscall.O_ACCMODE != os.O_WRONLY && opf.flags & syscall.O_ACCMODE != os.O_RDWR {
+	if opf.flags&syscall.O_ACCMODE != os.O_WRONLY && opf.flags&syscall.O_ACCMODE != os.O_RDWR {
 		logger.LogIf(nil, errors.New(fmt.Sprintf("flags=%x", opf.flags)))
 		return 0, errFileAccessDenied
 	}
@@ -543,7 +545,7 @@ func (opf *opfsFile) Write(p []byte) (n int, err error) {
 
 func (opf *opfsFile) Read(p []byte) (n int, err error) {
 
-	if opf.flags & syscall.O_ACCMODE != os.O_RDONLY && opf.flags & syscall.O_ACCMODE != os.O_RDWR {
+	if opf.flags&syscall.O_ACCMODE != os.O_RDONLY && opf.flags&syscall.O_ACCMODE != os.O_RDWR {
 		logger.LogIf(nil, errors.New(fmt.Sprintf("flags=%x", opf.flags)))
 		return 0, errFileAccessDenied
 	}
@@ -571,9 +573,9 @@ func (opf *opfsFile) Read(p []byte) (n int, err error) {
 	}
 }
 
-func (opf *opfsFile) ReadAt (p []byte, off int64) (n int, err error) {
+func (opf *opfsFile) ReadAt(p []byte, off int64) (n int, err error) {
 
-	if opf.flags & syscall.O_ACCMODE != os.O_RDONLY && opf.flags & syscall.O_ACCMODE != os.O_RDWR {
+	if opf.flags&syscall.O_ACCMODE != os.O_RDONLY && opf.flags&syscall.O_ACCMODE != os.O_RDWR {
 		logger.LogIf(nil, errors.New(fmt.Sprintf("flags=%x", opf.flags)))
 		return 0, errFileAccessDenied
 	}
@@ -639,7 +641,7 @@ func opfsOpenPath(path string, flag int, perm os.FileMode) (*opfsFile, error) {
 	ret := C.ofapi_open(root.fs, cpath, &opf.fd)
 	if ret != C.int(0) {
 		if ret == C.int(-2) && ((flag & os.O_CREATE) != 0) {
-			dirpath, filename := filepath.Split(strings.TrimSuffix(path,SlashSeparator))
+			dirpath, filename := filepath.Split(strings.TrimSuffix(path, SlashSeparator))
 			var pfd *C.ofapi_fd_t
 			cDirPath := C.CString(dirpath)
 			defer C.free(unsafe.Pointer(cDirPath))
@@ -668,13 +670,13 @@ func opfsOpenPath(path string, flag int, perm os.FileMode) (*opfsFile, error) {
 	}
 	opf.flags = flag
 	_, opf.name = filepath.Split(strings.TrimSuffix(path, SlashSeparator))
-	if flag & os.O_TRUNC != 0 {
+	if flag&os.O_TRUNC != 0 {
 		ret := C.ofapi_truncate(opf.fd, C.uint64_t(0))
 		if ret != C.int(0) {
 			return nil, errTruncateFailed
 		}
 	}
-	if flag & os.O_APPEND != 0 {
+	if flag&os.O_APPEND != 0 {
 		var oatt C.struct_oatt
 		ret := C.ofapi_getattr(opf.fd, &oatt)
 		if ret != C.int(0) {
@@ -725,7 +727,7 @@ func opfsCreateFile(ctx context.Context, filePath string, reader io.Reader, fall
 func opfsOpen(filePath string) (*opfsFile, error) {
 	var opf opfsFile
 	//filePath = strings.ReplaceAll(filePath, root.fspath, root.rootpath)
-	fd, err := opfsCopen(strings.TrimSuffix(filePath,SlashSeparator))
+	fd, err := opfsCopen(strings.TrimSuffix(filePath, SlashSeparator))
 	if err != nil {
 		return nil, err
 	}
@@ -754,11 +756,11 @@ func opfsStatPath(filePath string) (os.FileInfo, error) {
 }
 
 func opfsReadDirN(dirPath string, count int) (entries []string, err error) {
-	return opfsReadDirWithOpts(dirPath, readDirOpts{count:count})
+	return opfsReadDirWithOpts(dirPath, readDirOpts{count: count})
 }
 
-func opfsReadDir(dirPath string)(entries []string, err error) {
-	return opfsReadDirWithOpts(dirPath, readDirOpts{count:-1})
+func opfsReadDir(dirPath string) (entries []string, err error) {
+	return opfsReadDirWithOpts(dirPath, readDirOpts{count: -1})
 }
 
 func opfsTouch(ctx context.Context, statLoc string) error {
@@ -879,15 +881,15 @@ func opfsAppendFile(dst string, src string, osync bool) error {
 }
 
 func opfsWriteFile(name string, data []byte, perm os.FileMode) error {
-        f, err := opfsOpenPath(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-        if err != nil {
-                return err
-        }
-        _, err = f.Write(data)
-        if err1 := f.Close(); err1 != nil && err == nil {
-                err = err1
-        }
-        return err
+	f, err := opfsOpenPath(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err1 := f.Close(); err1 != nil && err == nil {
+		err = err1
+	}
+	return err
 }
 
 func opfsRemovePath(path string) (err error) {
@@ -911,7 +913,7 @@ func opfsRemovePath(path string) (err error) {
 		return errGetattrFailed
 	}
 
-	if uint32(oatt.oa_mode) & uint32(C.S_IFDIR) == 0 {
+	if uint32(oatt.oa_mode)&uint32(C.S_IFDIR) == 0 {
 		parentDir, name := filepath.Split(path)
 		cParentDir := C.CString(parentDir)
 		defer C.free(unsafe.Pointer(cParentDir))
@@ -979,7 +981,7 @@ func opfsRemoveAllPath(dirPath string) (err error) {
 		return errGetattrFailed
 	}
 
-	if uint32(oatt.oa_mode) & uint32(C.S_IFDIR) == 0 {
+	if uint32(oatt.oa_mode)&uint32(C.S_IFDIR) == 0 {
 		parentDir, name := filepath.Split(dirPath)
 		cParentDir := C.CString(parentDir)
 		defer C.free(unsafe.Pointer(cParentDir))
@@ -1012,10 +1014,10 @@ func opfsRemoveAllPath(dirPath string) (err error) {
 			break
 		}
 		if C.GoString(&dent.d_name[0]) == "." ||
-		   C.GoString(&dent.d_name[0]) == ".." {
-		   continue
+			C.GoString(&dent.d_name[0]) == ".." {
+			continue
 		}
-		if uint32(oatt.oa_mode) & uint32(C.S_IFDIR) != 0 {
+		if uint32(oatt.oa_mode)&uint32(C.S_IFDIR) != 0 {
 			childPath := fmt.Sprintf("%s/%s", dirPath, C.GoString(&dent.d_name[0]))
 			err = opfsRemoveAllPath(childPath)
 			if err != nil {
@@ -1035,7 +1037,7 @@ func opfsRemoveAllPath(dirPath string) (err error) {
 		defer C.ofapi_close(parentfd)
 		cfilename := C.CString(name)
 		defer C.free(unsafe.Pointer(cfilename))
-		if uint32(oatt.oa_mode) & uint32(C.S_IFDIR) != 0 {
+		if uint32(oatt.oa_mode)&uint32(C.S_IFDIR) != 0 {
 			ret := C.ofapi_rmdirat(parentfd, cfilename)
 			if ret != C.int(0) {
 				message := fmt.Sprintf("rmdir failed %s/%s ret=%d", parentDir, name, int(ret))

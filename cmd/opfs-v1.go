@@ -106,6 +106,7 @@ func initMetaVolumeOPFS(fsPath, fsUUID string) error {
 	metaMultipartPath := pathJoin(fsPath, minioMetaMultipartBucket)
 	return opfsMkdirAll(metaMultipartPath, 0o777)
 }
+
 // NewFSObjectLayer - initialize new fs object layer.
 func NewOPFSObjectLayer(fsPath string) (ObjectLayer, error) {
 	ctx := GlobalContext

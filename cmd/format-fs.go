@@ -306,6 +306,7 @@ func createFormatOPFS(fsFormatPath string) error {
 
 	return jsonSave(lk.File, newFormatFSV1())
 }
+
 // This function returns a read-locked format.json reference to the caller.
 // The file descriptor should be kept open throughout the life
 // of the process so that another minio process does not try to
