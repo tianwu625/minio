@@ -248,6 +248,7 @@ func (fsi *fsIOPool) OpfsWrite(path string) (wlk *lock.LockedFile, err error) {
 	}
 	return wlk, nil
 }
+
 // Create - creates a new write locked file instance.
 // - if the file doesn't exist. We create the file and hold lock.
 func (fsi *fsIOPool) Create(path string) (wlk *lock.LockedFile, err error) {
@@ -307,6 +308,7 @@ func (fsi *fsIOPool) OpfsCreate(path string) (wlk *lock.LockedFile, err error) {
 	// Success.
 	return wlk, nil
 }
+
 // Close implements closing the path referenced by the reader in such
 // a way that it makes sure to remove entry from the map immediately
 // if no active readers are present.

@@ -21,9 +21,9 @@ package lock
 
 import (
 	"errors"
+	"io"
 	"os"
 	"sync"
-	"io"
 )
 
 // ErrAlreadyLocked is returned if the underlying fd is already locked.
@@ -85,7 +85,7 @@ func newRLockedFile(lkFile *LockedFile) (*RLockedFile, error) {
 
 // RLockedOpenFile - returns a wrapped read locked file, if the file
 // doesn't exist at path returns an error.
-func RLockedOpenFile(path string, lockedOpenFile func (path string, flag int, perm os.FileMode)(*LockedFile, error)) (*RLockedFile, error) {
+func RLockedOpenFile(path string, lockedOpenFile func(path string, flag int, perm os.FileMode) (*LockedFile, error)) (*RLockedFile, error) {
 	lkFile, err := lockedOpenFile(path, os.O_RDONLY, 0o666)
 	if err != nil {
 		return nil, err
@@ -99,17 +99,18 @@ type LockedFileInterface interface {
 	io.Reader
 	io.Writer
 	io.Seeker
-	Stat()(os.FileInfo, error)
+	Stat() (os.FileInfo, error)
 	Truncate(int64) error
 	io.Closer
 	Name() string
 }
+
 // LockedFile represents a locked file
 type LockedFile struct {
 	File LockedFileInterface
 }
 
-func (l *LockedFile) Read (p []byte) (n int, err error) {
+func (l *LockedFile) Read(p []byte) (n int, err error) {
 	return l.File.Read(p)
 }
 
@@ -129,7 +130,7 @@ func (l *LockedFile) Write(p []byte) (n int, err error) {
 	return l.File.Write(p)
 }
 
-func (l *LockedFile) Stat()(os.FileInfo, error) {
+func (l *LockedFile) Stat() (os.FileInfo, error) {
 	return l.File.Stat()
 }
 

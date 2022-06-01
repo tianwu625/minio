@@ -21,8 +21,8 @@ import "github.com/minio/madmin-go"
 
 // Gateway name backends
 const (
-	NASBackendGateway = "nas"
-	S3BackendGateway  = "s3"
+	NASBackendGateway  = "nas"
+	S3BackendGateway   = "s3"
 	OPFSBackendGateway = "opfs"
 )
 

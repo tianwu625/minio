@@ -14,12 +14,12 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"io"
 	iofs "io/fs"
 	"os"
-	"io"
-	"unsafe"
 	"syscall"
 	"time"
+	"unsafe"
 	//"strings"
 	"path/filepath"
 	//"os/exec"
@@ -38,7 +38,6 @@ var LerrFileAccessDenied = errors.New("permission deny")
 var LerrTruncateFailed = errors.New("truncate failed")
 var LerrIsDir = errors.New("file is dir")
 
-
 type opfsInfo struct {
 	name string
 	stat C.struct_oatt
@@ -54,7 +53,7 @@ func (ofi opfsInfo) Size() int64 {
 
 func (ofi opfsInfo) Mode() iofs.FileMode {
 	var filemode iofs.FileMode
-	switch  {
+	switch {
 	case (ofi.stat.oa_mode & C.S_IFDIR) != 0:
 		filemode |= iofs.ModeDir
 	case (ofi.stat.oa_mode & C.S_IFCHR) != 0:
@@ -74,7 +73,7 @@ func (ofi opfsInfo) Mode() iofs.FileMode {
 	if (ofi.stat.oa_mode & C.S_ISGID) != 0 {
 		filemode |= iofs.ModeSetgid
 	}
-	if (ofi.stat.oa_mode & C.S_ISVTX) != 0{
+	if (ofi.stat.oa_mode & C.S_ISVTX) != 0 {
 		filemode |= iofs.ModeSticky
 	}
 
@@ -96,16 +95,17 @@ func (ofi opfsInfo) ModTime() time.Time {
 }
 
 type opfsFile struct {
-	fd *C.ofapi_fd_t
+	fd     *C.ofapi_fd_t
 	offset int64
-	flags int
-	name string
-	mutex sync.Mutex
+	flags  int
+	name   string
+	mutex  sync.Mutex
 }
 
 var _zero uintptr
+
 func (opf *opfsFile) Write(p []byte) (n int, err error) {
-	if opf.flags & syscall.O_ACCMODE != os.O_WRONLY && opf.flags & syscall.O_ACCMODE != os.O_RDWR {
+	if opf.flags&syscall.O_ACCMODE != os.O_WRONLY && opf.flags&syscall.O_ACCMODE != os.O_RDWR {
 		logger.LogIf(nil, errors.New(fmt.Sprintf("flags=%x", opf.flags)))
 		return 0, os.ErrPermission
 	}
@@ -129,7 +129,7 @@ func (opf *opfsFile) Write(p []byte) (n int, err error) {
 func (opf *opfsFile) Read(p []byte) (n int, err error) {
 
 	//logger.Info("inlock opf %p read file %s len %d fd %p", opf, opf.name, len(p), unsafe.Pointer(opf.fd))
-	if opf.flags & syscall.O_ACCMODE != os.O_RDONLY && opf.flags & syscall.O_ACCMODE != os.O_RDWR {
+	if opf.flags&syscall.O_ACCMODE != os.O_RDONLY && opf.flags&syscall.O_ACCMODE != os.O_RDWR {
 		logger.LogIf(nil, errors.New(fmt.Sprintf("flags=%x", opf.flags)))
 		return 0, os.ErrPermission
 	}
@@ -157,10 +157,10 @@ func (opf *opfsFile) Read(p []byte) (n int, err error) {
 	}
 }
 
-func (opf *opfsFile) ReadAt (p []byte, off int64) (n int, err error) {
+func (opf *opfsFile) ReadAt(p []byte, off int64) (n int, err error) {
 
 	//logger.Info("in lock opf %p read file %s len %d fd %p", opf, opf.name, len(p), unsafe.Pointer(opf.fd))
-	if opf.flags & syscall.O_ACCMODE != os.O_RDONLY && opf.flags & syscall.O_ACCMODE != os.O_RDWR {
+	if opf.flags&syscall.O_ACCMODE != os.O_RDONLY && opf.flags&syscall.O_ACCMODE != os.O_RDWR {
 		logger.LogIf(nil, errors.New(fmt.Sprintf("flags=%x", opf.flags)))
 		return 0, os.ErrPermission
 	}
@@ -258,8 +258,8 @@ func LockedOpfsOpenFile(path string, flag int, perm os.FileMode) (*LockedFile, e
 }
 
 type opfsCroot struct {
-	fs *C.ofapi_fs_t
-	fspath string
+	fs       *C.ofapi_fs_t
+	fspath   string
 	rootpath string
 }
 
@@ -277,7 +277,7 @@ func getShare(fspath string) (sharename string) {
         return strings.Trim(string(names[1]), "\n")
 }
 */
-func OpfsCinit (fsPath string) (err error) {
+func OpfsCinit(fsPath string) (err error) {
 	root.fs = C.ofapi_init(C.CString("localhost"), C.int(1306), C.int(1), C.CString("/dev/null"))
 	//FIXME only for test and demo
 	//root.fspath = fsPath
@@ -318,13 +318,13 @@ func OpfsOpen(path string, flag int, perm os.FileMode) (*opfsFile, error) {
 	}
 	opf.flags = flag
 	_, opf.name = filepath.Split(path)
-	if flag & os.O_TRUNC != 0 {
+	if flag&os.O_TRUNC != 0 {
 		ret := C.ofapi_truncate(opf.fd, C.uint64_t(0))
 		if ret != C.int(0) {
 			return nil, LerrTruncateFailed
 		}
 	}
-	if flag & os.O_APPEND != 0 {
+	if flag&os.O_APPEND != 0 {
 		var oatt C.struct_oatt
 		ret := C.ofapi_getattr(opf.fd, &oatt)
 		if ret != C.int(0) {
@@ -336,4 +336,3 @@ func OpfsOpen(path string, flag int, perm os.FileMode) (*opfsFile, error) {
 	}
 	return &opf, nil
 }
-
