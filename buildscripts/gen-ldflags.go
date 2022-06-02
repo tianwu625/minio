@@ -99,7 +99,6 @@ func commitTime() time.Time {
 		fmt.Fprintln(os.Stderr, "Error generating git commit-time: ", err)
 		os.Exit(1)
 	}
-
 	return t.UTC()
 }
 
@@ -108,7 +107,7 @@ func main() {
 	if len(os.Args) > 1 {
 		version = os.Args[1]
 	} else {
-		version = commitTime().Format(time.RFC3339)
+		version = time.Now().Format(time.RFC3339)
 	}
 
 	fmt.Println(genLDFlags(version))
