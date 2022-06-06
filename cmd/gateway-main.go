@@ -311,7 +311,8 @@ func StartGateway(ctx *cli.Context, gw Gateway) {
 
 	go globalIAMSys.Init(GlobalContext, newObject, globalEtcdClient, globalRefreshIAMInterval)
 
-	if gatewayName == NASBackendGateway {
+	if gatewayName == NASBackendGateway ||
+		gatewayName == OPFSBackendGateway {
 		buckets, err := newObject.ListBuckets(GlobalContext)
 		if err != nil {
 			logger.Fatal(err, "Unable to list buckets")

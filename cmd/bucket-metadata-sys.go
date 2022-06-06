@@ -81,7 +81,8 @@ func (sys *BucketMetadataSys) Update(ctx context.Context, bucket string, configF
 		return errServerNotInitialized
 	}
 
-	if globalIsGateway && globalGatewayName != NASBackendGateway {
+	if globalIsGateway && globalGatewayName != NASBackendGateway &&
+		globalGatewayName != OPFSBackendGateway {
 		if configFile == bucketPolicyConfig {
 			if configData == nil {
 				return objAPI.DeleteBucketPolicy(ctx, bucket)
@@ -231,7 +232,8 @@ func (sys *BucketMetadataSys) GetObjectLockConfig(bucket string) (*objectlock.Co
 // GetLifecycleConfig returns configured lifecycle config
 // The returned object may not be modified.
 func (sys *BucketMetadataSys) GetLifecycleConfig(bucket string) (*lifecycle.Lifecycle, error) {
-	if globalIsGateway && globalGatewayName == NASBackendGateway {
+	if globalIsGateway && (globalGatewayName == NASBackendGateway ||
+		globalGatewayName == OPFSBackendGateway) {
 		// Only needed in case of NAS gateway.
 		objAPI := newObjectLayerFn()
 		if objAPI == nil {
@@ -263,7 +265,8 @@ func (sys *BucketMetadataSys) GetLifecycleConfig(bucket string) (*lifecycle.Life
 // GetNotificationConfig returns configured notification config
 // The returned object may not be modified.
 func (sys *BucketMetadataSys) GetNotificationConfig(bucket string) (*event.Config, error) {
-	if globalIsGateway && globalGatewayName == NASBackendGateway {
+	if globalIsGateway && (globalGatewayName == NASBackendGateway ||
+		globalGatewayName == OPFSBackendGateway) {
 		// Only needed in case of NAS gateway.
 		objAPI := newObjectLayerFn()
 		if objAPI == nil {
