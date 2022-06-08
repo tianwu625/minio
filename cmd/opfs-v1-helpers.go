@@ -72,10 +72,10 @@ func opfsCopen(path string) (fd *C.ofapi_fd_t, err error) {
 	defer C.free(unsafe.Pointer(cpath))
 	ret := C.ofapi_open(root.fs, cpath, &fd)
 	if ret != C.int(0) {
-		logger.LogIf(nil, errors.New(fmt.Sprintf("open path %s %d", path, int(ret))))
 		if ret == C.int(-2) {
 			return nil, errFileNotFound
 		} else {
+			logger.LogIf(nil, errors.New(fmt.Sprintf("open path %s %d", path, int(ret))))
 			return nil, errOpenFailed
 		}
 	}
@@ -952,8 +952,8 @@ func opfsRemovePath(path string) (err error) {
 		cfilename := C.CString(name)
 		defer C.free(unsafe.Pointer(cfilename))
 		ret := C.ofapi_rmdirat(parentfd, cfilename)
-		if ret != C.int(0) {
-			message := fmt.Sprintf("unlink failed %s/%s ret=%d", parentDir, name, int(ret))
+		if ret != C.int(0) && ret != C.int(-39) {
+			message := fmt.Sprintf("rmdir failed %s/%s ret=%d", parentDir, name, int(ret))
 			logger.LogIf(nil, errors.New(message))
 			return osErrToFileErr(errRemoveFailed)
 		}
