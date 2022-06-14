@@ -392,7 +392,11 @@ func opfsStatVolume(ctx context.Context, volume string) (os.FileInfo, error) {
 	ofi, err := opfsStat(ctx, volume)
 
 	if err != nil {
-		return nil, err
+		if err == errFileNotFound {
+			return nil, errVolumeNotFound
+		} else {
+			return nil, err
+		}
 	}
 
 	if !ofi.IsDir() {
