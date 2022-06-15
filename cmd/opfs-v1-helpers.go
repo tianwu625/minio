@@ -167,9 +167,15 @@ func opfsRemoveDir(ctx context.Context, dirPath string) (err error) {
 	defer C.free(unsafe.Pointer(cBucketName))
 	ret := C.ofapi_rmdirat(parentfd, cBucketName)
 	if ret != C.int(0) {
-		logger.LogIf(ctx, errors.New(fmt.Sprintf("remove dir %s/%s ret %d",
-			parentdir, bucketname, int(ret))))
-		return errRemoveFailed
+		if ret == C.int(-2) {
+			return errVolumeNotFound
+		} else if ret == C.int(-39) {
+			return errVolumeNotEmpty
+		} else {
+			logger.LogIf(ctx, errors.New(fmt.Sprintf("remove dir %s/%s ret %d",
+				parentdir, bucketname, int(ret))))
+			return errRemoveFailed
+		}
 	}
 
 	return nil
