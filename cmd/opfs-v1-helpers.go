@@ -99,16 +99,27 @@ func opfsMkdir(ctx context.Context, dirPath string) (err error) {
 	parentdir, bucketname := filepath.Split(strings.TrimSuffix(dirPath, SlashSeparator))
 	parentfd, err := opfsCopen(parentdir)
 	if err != nil {
-		return err
+		if err == errFileNotFound {
+			return errDiskAccessDenied
+		} else {
+			return err
+		}
 	}
 	defer C.ofapi_close(parentfd)
 	cBucketName := C.CString(bucketname)
 	defer C.free(unsafe.Pointer(cBucketName))
 	ret := C.ofapi_mkdirat(parentfd, cBucketName, 0777)
 	if ret != C.int(0) {
-		logger.LogIf(ctx, errors.New(fmt.Sprintf("create dir %s/%s ret %d",
-			parentdir, bucketname, int(ret))))
-		return errCreateFailed
+		if ret == C.int(-17) {
+			return errVolumeExists
+		} else if ret == C.int(-20) {
+			logger.LogIf(ctx, errDiskAccessDenied)
+			return errDiskAccessDenied
+		} else {
+			logger.LogIf(ctx, errors.New(fmt.Sprintf("create dir %s/%s ret %d",
+				parentdir, bucketname, int(ret))))
+			return errCreateFailed
+		}
 	}
 
 	return nil
@@ -451,9 +462,8 @@ func opfsIsFile(ctx context.Context, filePath string) bool {
 
 func opfsMkdirAll(path string, mode os.FileMode) error {
 	//FIXME only for test and demo
-	path = strings.Trim(strings.TrimSuffix(path, SlashSeparator), root.rootpath)
+	path = strings.TrimSuffix(path, SlashSeparator)[len(root.rootpath)+1:]
 	ipaths := strings.Split(path, SlashSeparator)
-
 	var p strings.Builder
 	p.WriteString(root.rootpath)
 	for _, s := range ipaths {
