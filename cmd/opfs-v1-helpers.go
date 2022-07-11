@@ -480,7 +480,7 @@ func opfsMkdirAll(path string, mode os.FileMode) error {
 			cName := C.CString(s)
 			defer C.free(unsafe.Pointer(cName))
 			ret = C.ofapi_mkdirat(pfd, cName, 0777)
-			if ret != C.int(0) {
+			if ret != C.int(0) && ret != C.int(-17) {
 				logger.LogIf(nil, errors.New(fmt.Sprintf("mkdir failed %s/%s, ret %d", p.String(), s, int(ret))))
 				return errCreateFailed
 			}
