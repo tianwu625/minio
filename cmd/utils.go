@@ -835,6 +835,48 @@ func newContext(r *http.Request, w http.ResponseWriter, api string) context.Cont
 	return logger.SetReqInfo(r.Context(), reqInfo)
 }
 
+func newOpfsContext(ctx context.Context, r *http.Request) (rctx context.Context, s3Err APIErrorCode) {
+	cred, s3err := getRequestAuthTypeCredential(ctx, r)
+	if s3err != ErrNone {
+		return ctx, s3err
+	}
+	if cred.AccessKey == globalActiveCred.AccessKey && globalGatewayName == OPFSBackendGateway {
+		claims := make(map[string]interface{})
+		claims["userid"] = 0
+		claims["groupid"] = 0
+		return context.WithValue(ctx, opfsCredKey, claims), ErrNone
+	}
+	if !cred.IsOPFSAccount() {
+		return ctx, ErrNone
+	}
+	return context.WithValue(ctx, opfsCredKey, cred.Claims), ErrNone
+}
+
+func newOpfsContextPutAction(ctx context.Context, r *http.Request) (rctx context.Context, s3Err APIErrorCode) {
+	cred, s3err := getRequestAuthPutAction(ctx, r)
+	if s3err != ErrNone {
+		return ctx, s3err
+	}
+	if cred.AccessKey == globalActiveCred.AccessKey && globalGatewayName == OPFSBackendGateway {
+		claims := make(map[string]interface{})
+		claims["userid"] = 0
+		claims["groupid"] = 0
+		return context.WithValue(ctx, opfsCredKey, claims), ErrNone
+	}
+	if !cred.IsOPFSAccount() {
+		return ctx, ErrNone
+	}
+	return context.WithValue(ctx, opfsCredKey, cred.Claims), ErrNone
+}
+
+func newOpfsRoot(ctx context.Context) context.Context {
+	claims := make(map[string]interface{})
+	claims["userid"] = 0
+	claims["groupid"] = 0
+
+	return context.WithValue(ctx, opfsCredKey, claims)
+}
+
 // Used for registering with rest handlers (have a look at registerStorageRESTHandlers for usage example)
 // If it is passed ["aaaa", "bbbb"], it returns ["aaaa", "{aaaa:.*}", "bbbb", "{bbbb:.*}"]
 func restQueries(keys ...string) []string {

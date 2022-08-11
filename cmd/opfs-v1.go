@@ -20,6 +20,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -31,14 +32,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/minio/madmin-go"
 	"github.com/minio/minio-go/v7/pkg/s3utils"
 	"github.com/minio/minio-go/v7/pkg/tags"
-	"github.com/minio/minio/internal/color"
 	"github.com/minio/minio/internal/config"
 	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/minio/internal/lock"
@@ -108,7 +107,8 @@ func initMetaVolumeOPFS(fsPath, fsUUID string) error {
 }
 
 // NewFSObjectLayer - initialize new fs object layer.
-func NewOPFSObjectLayer(fsPath string) (ObjectLayer, error) {
+// GlobalContext should be root privilege
+func NewOPFSObjectLayer(fsPath string) (*OPFSObjects, error) {
 	ctx := GlobalContext
 	if fsPath == "" {
 		return nil, errInvalidArgument
@@ -193,7 +193,6 @@ func (ofs *OPFSObjects) SetDriveCounts() []int {
 // Shutdown - should be called when process shuts down.
 func (ofs *OPFSObjects) Shutdown(ctx context.Context) error {
 	ofs.fsFormatRlk.Close()
-
 	// Cleanup and delete tmp uuid.
 	return opfsRemoveAll(ctx, pathJoin(ofs.fsPath, minioMetaTmpBucket, ofs.fsUUID))
 }
@@ -210,190 +209,13 @@ func (ofs *OPFSObjects) LocalStorageInfo(ctx context.Context) (StorageInfo, []er
 
 // StorageInfo - returns underlying storage statistics.
 func (ofs *OPFSObjects) StorageInfo(ctx context.Context) (StorageInfo, []error) {
-	di, err := getDiskInfo(ofs.fsPath)
-	if err != nil {
-		return StorageInfo{}, []error{err}
-	}
-	storageInfo := StorageInfo{
-		Disks: []madmin.Disk{
-			{
-				State:          madmin.DriveStateOk,
-				TotalSpace:     di.Total,
-				UsedSpace:      di.Used,
-				AvailableSpace: di.Free,
-				DrivePath:      ofs.fsPath,
-			},
-		},
-	}
-	storageInfo.Backend.Type = madmin.FS
-	return storageInfo, nil
+	return StorageInfo{}, []error{NotImplemented{}}
 }
 
 // NSScanner returns data usage stats of the current FS deployment
 func (ofs *OPFSObjects) NSScanner(ctx context.Context, bf *bloomFilter, updates chan<- DataUsageInfo, wantCycle uint32, _ madmin.HealScanMode) error {
-	defer close(updates)
-	// Load bucket totals
-	var totalCache dataUsageCache
-	err := totalCache.load(ctx, ofs, dataUsageCacheName)
-	if err != nil {
-		return err
-	}
-	totalCache.Info.Name = dataUsageRoot
-	buckets, err := ofs.ListBuckets(ctx)
-	if err != nil {
-		return err
-	}
-	if len(buckets) == 0 {
-		totalCache.keepBuckets(buckets)
-		updates <- totalCache.dui(dataUsageRoot, buckets)
-		return nil
-	}
-	for i, b := range buckets {
-		if isReservedOrInvalidBucket(b.Name, false) {
-			// Delete bucket...
-			buckets = append(buckets[:i], buckets[i+1:]...)
-		}
-	}
-
-	totalCache.Info.BloomFilter = bf.bytes()
-
-	// Clear totals.
-	var root dataUsageEntry
-	if r := totalCache.root(); r != nil {
-		root.Children = r.Children
-	}
-	totalCache.replace(dataUsageRoot, "", root)
-
-	// Delete all buckets that does not exist anymore.
-	totalCache.keepBuckets(buckets)
-
-	for _, b := range buckets {
-		// Load bucket cache.
-		var bCache dataUsageCache
-		err := bCache.load(ctx, ofs, path.Join(b.Name, dataUsageCacheName))
-		if err != nil {
-			return err
-		}
-		if bCache.Info.Name == "" {
-			bCache.Info.Name = b.Name
-		}
-		bCache.Info.BloomFilter = totalCache.Info.BloomFilter
-		bCache.Info.NextCycle = wantCycle
-		upds := make(chan dataUsageEntry, 1)
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for update := range upds {
-				totalCache.replace(b.Name, dataUsageRoot, update)
-				if intDataUpdateTracker.debug {
-					logger.Info(color.Green("NSScanner:")+" Got update: %v", len(totalCache.Cache))
-				}
-				cloned := totalCache.clone()
-				updates <- cloned.dui(dataUsageRoot, buckets)
-			}
-		}()
-		bCache.Info.updates = upds
-		cache, err := ofs.scanBucket(ctx, b.Name, bCache)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		logger.LogIf(ctx, err)
-		cache.Info.BloomFilter = nil
-		wg.Wait()
-
-		if cache.root() == nil {
-			if intDataUpdateTracker.debug {
-				logger.Info(color.Green("NSScanner:") + " No root added. Adding empty")
-			}
-			cache.replace(cache.Info.Name, dataUsageRoot, dataUsageEntry{})
-		}
-		if cache.Info.LastUpdate.After(bCache.Info.LastUpdate) {
-			if intDataUpdateTracker.debug {
-				logger.Info(color.Green("NSScanner:")+" Saving bucket %q cache with %d entries", b.Name, len(cache.Cache))
-			}
-			logger.LogIf(ctx, cache.save(ctx, ofs, path.Join(b.Name, dataUsageCacheName)))
-		}
-		// Merge, save and send update.
-		// We do it even if unchanged.
-		cl := cache.clone()
-		entry := cl.flatten(*cl.root())
-		totalCache.replace(cl.Info.Name, dataUsageRoot, entry)
-		if intDataUpdateTracker.debug {
-			logger.Info(color.Green("NSScanner:")+" Saving totals cache with %d entries", len(totalCache.Cache))
-		}
-		totalCache.Info.LastUpdate = time.Now()
-		logger.LogIf(ctx, totalCache.save(ctx, ofs, dataUsageCacheName))
-		cloned := totalCache.clone()
-		updates <- cloned.dui(dataUsageRoot, buckets)
-
-	}
-
-	return nil
-}
-
-// scanBucket scans a single bucket in FS mode.
-// The updated cache for the bucket is returned.
-// A partially updated bucket may be returned.
-func (ofs *OPFSObjects) scanBucket(ctx context.Context, bucket string, cache dataUsageCache) (dataUsageCache, error) {
-	defer close(cache.Info.updates)
-
-	// Get bucket policy
-	// Check if the current bucket has a configured lifecycle policy
-	lc, err := globalLifecycleSys.Get(bucket)
-	if err == nil && lc.HasActiveRules("", true) {
-		if intDataUpdateTracker.debug {
-			logger.Info(color.Green("scanBucket:") + " lifecycle: Active rules found")
-		}
-		cache.Info.lifeCycle = lc
-	}
-
-	// Load bucket info.
-	cache, err = scanDataFolder(ctx, -1, -1, ofs.fsPath, cache, func(item scannerItem) (sizeSummary, error) {
-		bucket, object := item.bucket, item.objectPath()
-		fsMetaBytes, err := opfsReadFile(pathJoin(ofs.fsPath, minioMetaBucket, bucketMetaPrefix, bucket, object, ofs.metaJSONFile))
-		if err != nil && !osIsNotExist(err) {
-			if intDataUpdateTracker.debug {
-				logger.Info(color.Green("scanBucket:")+" object return unexpected error: %v/%v: %w", item.bucket, item.objectPath(), err)
-			}
-			return sizeSummary{}, errSkipFile
-		}
-
-		fsMeta := newFSMetaV1()
-		metaOk := false
-		if len(fsMetaBytes) > 0 {
-			json := jsoniter.ConfigCompatibleWithStandardLibrary
-			if err = json.Unmarshal(fsMetaBytes, &fsMeta); err == nil {
-				metaOk = true
-			}
-		}
-		if !metaOk {
-			fsMeta = ofs.defaultFsJSON(object)
-		}
-
-		// Stat the file.
-		fi, fiErr := opfsStatPath(item.Path)
-		if fiErr != nil {
-			if intDataUpdateTracker.debug {
-				logger.Info(color.Green("scanBucket:")+" object path missing: %v: %w", item.Path, fiErr)
-			}
-			return sizeSummary{}, errSkipFile
-		}
-
-		oi := fsMeta.ToObjectInfo(bucket, object, fi)
-		atomic.AddUint64(&globalScannerStats.accTotalVersions, 1)
-		atomic.AddUint64(&globalScannerStats.accTotalObjects, 1)
-		sz := item.applyActions(ctx, ofs, oi, &sizeSummary{})
-		if sz >= 0 {
-			return sizeSummary{totalSize: sz, versions: 1}, nil
-		}
-
-		return sizeSummary{totalSize: fi.Size(), versions: 1}, nil
-	}, 0)
-
-	return cache, err
+	logger.CriticalIf(ctx, errors.New("not implemented"))
+	return NotImplemented{}
 }
 
 // Bucket operations
@@ -444,7 +266,8 @@ func (ofs *OPFSObjects) MakeBucketWithLocation(ctx context.Context, bucket strin
 	}
 
 	meta := newBucketMetadata(bucket)
-	if err := meta.Save(ctx, ofs); err != nil {
+	rootCtx := newOpfsRoot(ctx)
+	if err := meta.Save(rootCtx, ofs); err != nil {
 		return toObjectErr(err, bucket)
 	}
 
@@ -452,6 +275,9 @@ func (ofs *OPFSObjects) MakeBucketWithLocation(ctx context.Context, bucket strin
 
 	return nil
 }
+
+//Get/Set/Delete Policy implement for minio self and process file in openfs with root
+//access managememt of policy is processed by minio itself
 
 // GetBucketPolicy - only needed for FS in NAS mode
 func (ofs *OPFSObjects) GetBucketPolicy(ctx context.Context, bucket string) (*policy.Policy, error) {
@@ -519,6 +345,7 @@ func (ofs *OPFSObjects) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 		return nil, err
 	}
 
+	setOpfsSessionRoot()
 	entries, err := opfsReadDirWithOpts(ofs.fsPath, readDirOpts{count: -1, followDirSymlink: true})
 	if err != nil {
 		logger.LogIf(ctx, errDiskNotFound)
@@ -589,6 +416,7 @@ func (ofs *OPFSObjects) DeleteBucket(ctx context.Context, bucket string, opts De
 	}
 
 	// Cleanup all the bucket metadata.
+	ctx = newOpfsRoot(ctx)
 	minioMetadataBucketDir := pathJoin(ofs.fsPath, minioMetaBucket, bucketMetaPrefix, bucket)
 	if err = opfsRemoveAll(ctx, minioMetadataBucketDir); err != nil {
 		return toObjectErr(err, bucket)
@@ -632,6 +460,7 @@ func (ofs *OPFSObjects) CopyObject(ctx context.Context, srcBucket, srcObject, ds
 	}
 
 	if cpSrcDstSame && srcInfo.metadataOnly {
+		setOpfsSessionRoot()
 		fsMetaPath := pathJoin(ofs.fsPath, minioMetaBucket, bucketMetaPrefix, srcBucket, srcObject, ofs.metaJSONFile)
 		wlk, err := ofs.rwPool.Write(fsMetaPath)
 		if err != nil {
@@ -742,6 +571,7 @@ func (ofs *OPFSObjects) GetObjectNInfo(ctx context.Context, bucket, object strin
 	// Take a rwPool lock for NFS gateway type deployment
 	rwPoolUnlocker := func() {}
 	if bucket != minioMetaBucket && lockType != noLock {
+		setOpfsSessionRoot()
 		fsMetaPath := pathJoin(ofs.fsPath, minioMetaBucket, bucketMetaPrefix, bucket, object, ofs.metaJSONFile)
 		_, err = ofs.rwPool.OpfsOpen(fsMetaPath)
 		if err != nil && err != errFileNotFound {
@@ -751,7 +581,10 @@ func (ofs *OPFSObjects) GetObjectNInfo(ctx context.Context, bucket, object strin
 		}
 		// Need to clean up lock after getObject is
 		// completed.
-		rwPoolUnlocker = func() { ofs.rwPool.Close(fsMetaPath) }
+		rwPoolUnlocker = func() {
+			setOpfsSessionRoot()
+			ofs.rwPool.Close(fsMetaPath)
+		}
 	}
 
 	objReaderFn, off, length, err := NewGetObjectReader(rs, objInfo, opts)
@@ -833,11 +666,12 @@ func (ofs *OPFSObjects) getObjectInfoNoFSLock(ctx context.Context, bucket, objec
 		return fsMeta.ToObjectInfo(bucket, object, fi), nil
 	}
 
+	rootCtx := newOpfsRoot(ctx)
 	fsMetaPath := pathJoin(ofs.fsPath, minioMetaBucket, bucketMetaPrefix, bucket, object, ofs.metaJSONFile)
 	// Read `fs.json` to perhaps contend with
 	// parallel Put() operations.
 
-	rc, _, err := opfsOpenFile(ctx, fsMetaPath, 0)
+	rc, _, err := opfsOpenFile(rootCtx, fsMetaPath, 0)
 	if err == nil {
 		fsMetaBuf, rerr := ioutil.ReadAll(rc)
 		rc.Close()
@@ -865,6 +699,7 @@ func (ofs *OPFSObjects) getObjectInfoNoFSLock(ctx context.Context, bucket, objec
 	}
 
 	// Stat the file to get file size.
+	// process access manage for opfsStatFile at least read privilege and attribute read privilege
 	fi, err := opfsStatFile(ctx, pathJoin(ofs.fsPath, bucket, object))
 	if err != nil {
 		return oi, err
@@ -892,6 +727,7 @@ func (ofs *OPFSObjects) getObjectInfo(ctx context.Context, bucket, object string
 	// Read `fs.json` to perhaps contend with
 	// parallel Put() operations.
 
+	setOpfsSessionRoot()
 	rlk, err := ofs.rwPool.OpfsOpen(fsMetaPath)
 	if err == nil {
 		// Read from fs metadata only if it exists.
@@ -915,6 +751,7 @@ func (ofs *OPFSObjects) getObjectInfo(ctx context.Context, bucket, object string
 	}
 
 	// Stat the file to get file size.
+	// process access manage for opfsStatFile at least read privilege and attribute read privilege
 	fi, err := opfsStatFile(ctx, pathJoin(ofs.fsPath, bucket, object))
 	if err != nil {
 		return oi, err
@@ -966,8 +803,8 @@ func (ofs *OPFSObjects) GetObjectInfo(ctx context.Context, bucket, object string
 		if err != nil {
 			return oi, toObjectErr(err, bucket, object)
 		}
-
 		fsMetaPath := pathJoin(ofs.fsPath, minioMetaBucket, bucketMetaPrefix, bucket, object, ofs.metaJSONFile)
+		setOpfsSessionRoot()
 		err = ofs.createFsJSON(object, fsMetaPath)
 		lk.Unlock(lkctx.Cancel)
 		if err != nil {
@@ -1028,7 +865,7 @@ func (ofs *OPFSObjects) putObject(ctx context.Context, bucket string, object str
 	// with a slash separator, we treat it like a valid operation
 	// and return success.
 	if isObjectDir(object, data.Size()) {
-		if err = opfsMkdirAll(pathJoin(ofs.fsPath, bucket, object), 0o777); err != nil {
+		if err = opfsMkdirAllWithCred(ctx, pathJoin(ofs.fsPath, bucket, object), 0o777); err != nil {
 			logger.LogIf(ctx, err)
 			return ObjectInfo{}, toObjectErr(err, bucket, object)
 		}
@@ -1049,6 +886,7 @@ func (ofs *OPFSObjects) putObject(ctx context.Context, bucket string, object str
 	if bucket != minioMetaBucket {
 		bucketMetaDir := pathJoin(ofs.fsPath, minioMetaBucket, bucketMetaPrefix)
 		fsMetaPath := pathJoin(bucketMetaDir, bucket, object, ofs.metaJSONFile)
+		setOpfsSessionRoot()
 		wlk, err = ofs.rwPool.OpfsWrite(fsMetaPath)
 		var freshFile bool
 		if err != nil {
@@ -1106,6 +944,7 @@ func (ofs *OPFSObjects) putObject(ctx context.Context, bucket string, object str
 
 	if bucket != minioMetaBucket {
 		// Write FS metadata after a successful namespace operation.
+		setOpfsSessionRoot()
 		if _, err = fsMeta.WriteTo(wlk); err != nil {
 			return ObjectInfo{}, toObjectErr(err, bucket, object)
 		}
@@ -1181,6 +1020,7 @@ func (ofs *OPFSObjects) DeleteObject(ctx context.Context, bucket, object string,
 	minioMetaBucketDir := pathJoin(ofs.fsPath, minioMetaBucket)
 	fsMetaPath := pathJoin(minioMetaBucketDir, bucketMetaPrefix, bucket, object, ofs.metaJSONFile)
 	if bucket != minioMetaBucket {
+		setOpfsSessionRoot()
 		rwlk, err = ofs.rwPool.OpfsWrite(fsMetaPath)
 		if err != nil && err != errFileNotFound {
 			logger.LogIf(ctx, err)
@@ -1203,7 +1043,8 @@ func (ofs *OPFSObjects) DeleteObject(ctx context.Context, bucket, object string,
 
 	if bucket != minioMetaBucket {
 		// Delete the metadata object.
-		err = opfsDeleteFile(ctx, minioMetaBucketDir, fsMetaPath)
+		rootCtx := newOpfsRoot(ctx)
+		err = opfsDeleteFile(rootCtx, minioMetaBucketDir, fsMetaPath)
 		if err != nil && err != errFileNotFound {
 			return objInfo, toObjectErr(err, bucket, object)
 		}
@@ -1226,6 +1067,7 @@ func (ofs *OPFSObjects) listDirFactory() ListDirFunc {
 	// listDir - lists all the entries at a given prefix and given entry in the prefix.
 	listDir := func(bucket, prefixDir, prefixEntry string) (emptyDir bool, entries []string, delayIsLeaf bool) {
 		var err error
+		setOpfsSessionRoot()
 		entries, err = opfsReadDir(pathJoin(ofs.fsPath, bucket, prefixDir))
 		if err != nil && err != errFileNotFound {
 			logger.LogIf(GlobalContext, err)
@@ -1279,6 +1121,7 @@ func (ofs *OPFSObjects) ListObjects(ctx context.Context, bucket, prefix, marker,
 	}
 }
 
+// Get/Put/DELETE ObjectTags access manage for minio
 // GetObjectTags - get object tags from an existing object
 func (ofs *OPFSObjects) GetObjectTags(ctx context.Context, bucket, object string, opts ObjectOptions) (*tags.Tags, error) {
 	if opts.VersionID != "" && opts.VersionID != nullVersionID {
@@ -1468,7 +1311,7 @@ func (ofs *OPFSObjects) RestoreTransitionedObject(ctx context.Context, bucket, o
 // Errors are ignored, only errors from the callback are returned.
 // For now only direct file paths are supported.
 func (ofs *OPFSObjects) GetRawData(ctx context.Context, volume, file string, fn func(r io.Reader, host string, disk string, filename string, size int64, modtime time.Time, isDir bool) error) error {
-	f, err := opfsOpen(filepath.Join(ofs.fsPath, volume, file))
+	f, err := opfsOpenWithCred(ctx, filepath.Join(ofs.fsPath, volume, file))
 	if err != nil {
 		return nil
 	}
@@ -1478,4 +1321,147 @@ func (ofs *OPFSObjects) GetRawData(ctx context.Context, volume, file string, fn 
 		return nil
 	}
 	return fn(f, "fs", ofs.fsUUID, file, st.Size(), st.ModTime(), st.IsDir())
+}
+
+func checkACLInvalid(grants []grant) error {
+	for _, g := range grants {
+		if g.Grantee.XMLXSI == EmailType {
+			return NotImplemented{}
+		}
+
+		if g.Grantee.XMLXSI == AuthType {
+			return NotImplemented{}
+		}
+	}
+	return nil
+}
+
+func (ofs *OPFSObjects) SetAcl(ctx context.Context, bucket, object string, grants []grant) error {
+	if err := checkACLInvalid(grants); err != nil {
+		logger.LogIf(ctx, fmt.Errorf("check acl invalid err %v, grants %v", err, grants))
+		return err
+	}
+	var path string
+	if object == "" {
+		path = filepath.Join(ofs.fsPath, bucket, "/")
+	} else {
+		path = filepath.Join(ofs.fsPath, bucket, object)
+	}
+
+	info, err := opfsStatPath(path)
+	if err != nil {
+		return err
+	}
+
+	isdir := info.Mode().IsDir()
+	opfsgrants := make([]opfsAcl, 0, len(grants))
+	for _, g := range grants {
+		var og opfsAcl
+		og.aclbits = s3mapopfs(g.Permission, isdir)
+		og.acltype = g.Grantee.XMLXSI
+		switch og.acltype {
+		case UserType:
+			if g.Grantee.ID == "" {
+				return errInvalidArgument
+			}
+			og.uid, err = globalIAMSys.GetUserIdByCanionialID(g.Grantee.ID)
+			if err != nil {
+				return err
+			}
+			if err != nil {
+				return err
+			}
+		case GroupType:
+			if g.Grantee.URI == "" {
+				return errInvalidArgument
+			}
+			gname, err := parseURIGroup(g.Grantee.URI)
+			if err != nil {
+				return err
+			}
+			og.gid, err = globalIAMSys.GetGroupIdByName(gname)
+			if err != nil {
+				if !isAllUser(g.Grantee.URI) {
+					return err
+				}
+				og.acltype = EveryType
+			}
+		case EmailType:
+			return NotImplemented{}
+		case OwnerType:
+			og.uid, _, err = opfsGetUidGid(path)
+		case EveryType:
+		default:
+			return errInvalidArgument
+		}
+		opfsgrants = append(opfsgrants, og)
+	}
+	err = opfsSetAclWithCred(ctx, path, opfsgrants)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (ofs *OPFSObjects) GetAcl(ctx context.Context, bucket, object string) ([]grant, error) {
+	var path string
+	if object == "" {
+		path = filepath.Join(ofs.fsPath, bucket, "/")
+	} else {
+		path = filepath.Join(ofs.fsPath, bucket, object)
+	}
+	info, err := opfsStatPath(path)
+	if err != nil {
+		return nil, err
+	}
+	isdir := info.Mode().IsDir()
+	opfsgrants, err := opfsGetAclWithCred(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	grantsSum := make([]grant, 0, len(opfsgrants))
+	for _, og := range opfsgrants {
+		grants := make([]grant, 0, permissionMaxLen)
+		permissionList := opfsmaps3List(og.aclbits, isdir)
+		for _, p := range permissionList {
+			var g grant
+			g.Permission = p
+			switch og.acltype {
+			case OwnerType:
+				fallthrough
+			case UserType:
+				cid, err := globalIAMSys.GetCanionialIdByUid(og.uid)
+				if err != nil {
+					if og.uid != 0 {
+						return grants, err
+					}
+					cid = globalMinioDefaultOwnerID
+				}
+				g.Grantee.XMLNS = AWSNS
+				g.Grantee.XMLXSI = UserType
+				g.Grantee.Type = UserType
+				g.Grantee.ID = cid
+			case GroupType:
+				gname, err := globalIAMSys.GetGroupNameByGid(og.gid)
+				if err != nil {
+					return grants, err
+				}
+				g.Grantee.XMLNS = AWSNS
+				g.Grantee.XMLXSI = GroupType
+				g.Grantee.Type = GroupType
+				g.Grantee.URI = httpSchemWithSlash + AWSCom + "/" + AWSGroup + "/" + AWSS3 + "/" + gname
+			case EveryType:
+				g.Grantee.XMLNS = AWSNS
+				g.Grantee.XMLXSI = GroupType
+				g.Grantee.Type = GroupType
+				g.Grantee.URI = httpSchemWithSlash + AWSCom + "/" + AWSGroup + "/" + AWSGlobal + "/" + AWSAllUser
+			default:
+				return grants, NotImplemented{}
+			}
+			grants = append(grants, g)
+		}
+		grantsSum = append(grantsSum, grants...)
+	}
+	return grantsSum, nil
 }

@@ -404,6 +404,7 @@ func (b *BucketMetadata) Save(ctx context.Context, api ObjectLayer) error {
 	}
 
 	configFile := path.Join(bucketMetaPrefix, b.Name, bucketMetadataFile)
+
 	return saveConfig(ctx, api, configFile, data)
 }
 

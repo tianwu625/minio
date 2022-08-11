@@ -137,10 +137,11 @@ func newUserIdentity(cred auth.Credentials) UserIdentity {
 
 // GroupInfo contains info about a group
 type GroupInfo struct {
-	Version   int       `json:"version"`
-	Status    string    `json:"status"`
-	Members   []string  `json:"members"`
-	UpdatedAt time.Time `json:"updatedAt,omitempty"`
+	Version   int         `json:"version"`
+	Status    string      `json:"status"`
+	Members   []string    `json:"members"`
+	UpdatedAt time.Time   `json:"updatedAt,omitempty"`
+	Attr      interface{} `json:",omitempty"`
 }
 
 func newGroupInfo(members []string) GroupInfo {
@@ -441,8 +442,12 @@ func (store *IAMStoreSys) LoadIAMCache(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+	} else if iamOpfs, ok := store.IAMStorageAPI.(*IAMOpfsStore); ok {
+		err := iamOpfs.loadAllFromOPFS(ctx, newCache)
+		if err != nil {
+			return err
+		}
 	} else {
-
 		if err := store.loadPolicyDocs(ctx, newCache.iamPolicyDocsMap); err != nil {
 			return err
 		}
@@ -820,7 +825,8 @@ func (store *IAMStoreSys) ListGroups(ctx context.Context) (res []string, err err
 	cache := store.lock()
 	defer store.unlock()
 
-	if store.getUsersSysType() == MinIOUsersSysType {
+	if store.getUsersSysType() == MinIOUsersSysType ||
+		store.getUsersSysType() == OPFSUsersSysType {
 		m := map[string]GroupInfo{}
 		err = store.loadGroups(ctx, m)
 		if err != nil {
@@ -1276,7 +1282,7 @@ func (store *IAMStoreSys) GetUserInfo(name string) (u madmin.UserInfo, err error
 	cache := store.rlock()
 	defer store.runlock()
 
-	if store.getUsersSysType() != MinIOUsersSysType {
+	if store.getUsersSysType() == LDAPUsersSysType {
 		// If the user has a mapped policy or is a member of a group, we
 		// return that info. Otherwise we return error.
 		var groups []string
@@ -1989,4 +1995,92 @@ func (store *IAMStoreSys) LoadUser(ctx context.Context, accessKey string) {
 			store.loadPolicyDoc(ctx, policy, cache.iamPolicyDocsMap)
 		}
 	}
+}
+
+func (store *IAMStoreSys) GetUserIdByCanionialID(userid string) (int, error) {
+	gider, ok := store.IAMStorageAPI.(GetUserCanionialIDer)
+	if !ok {
+		return 0, NotImplemented{}
+	}
+	cache := store.lock()
+	defer store.unlock()
+	found := false
+	var foundCred auth.Credentials
+	for _, cred := range cache.iamUsersMap {
+		uid, err := gider.GetUserCanionialID(&cred)
+		if err != nil {
+			return 0, err
+		}
+		if uid == userid {
+			found = true
+			foundCred = cred
+			break
+		}
+	}
+
+	if found {
+		return foundCred.Claims["userid"].(int), nil
+	}
+
+	return 0, errNoSuchUser
+}
+
+func (store *IAMStoreSys) GetGroupIdByName(gname string) (int, error) {
+	cache := store.lock()
+	defer store.unlock()
+
+	gi, ok := cache.iamGroupsMap[gname]
+	if !ok {
+		return 0, errNoSuchGroup
+	}
+
+	gid, ok := gi.Attr.(int)
+	if !ok {
+		return 0, NotImplemented{}
+	}
+
+	return gid, nil
+}
+
+func (store *IAMStoreSys) GetCanionialIdByUid(uid int) (string, error) {
+	cache := store.lock()
+	defer store.unlock()
+	for _, ucred := range cache.iamUsersMap {
+		if !ucred.IsOPFSAccount() {
+			return "", NotImplemented{}
+		}
+		id, ok := ucred.Claims["userid"].(int)
+		if !ok {
+			return "", NotImplemented{}
+		}
+		if id == uid {
+			gider, ok := store.IAMStorageAPI.(GetUserCanionialIDer)
+			if !ok {
+				return "", NotImplemented{}
+			}
+			canionialId, err := gider.GetUserCanionialID(&ucred)
+			if err != nil {
+				return "", err
+			}
+			return canionialId, nil
+		}
+	}
+	return "", errNoSuchUser
+}
+
+func (store *IAMStoreSys) GetGroupNameByGid(gid int) (string, error) {
+	cache := store.lock()
+	defer store.unlock()
+
+	for gname, gi := range cache.iamGroupsMap {
+		id, ok := gi.Attr.(int)
+		if !ok {
+			return "", NotImplemented{}
+		}
+		if id == gid {
+			return gname, nil
+		}
+	}
+
+	return "", errNoSuchGroup
 }

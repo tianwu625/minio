@@ -174,6 +174,10 @@ func StartGateway(ctx *cli.Context, gw Gateway) {
 		cli.ShowCommandHelpAndExit(ctx, gatewayName, 1)
 	}
 
+	if globalGatewayName == OPFSBackendGateway {
+		GlobalContext = newOpfsRoot(GlobalContext)
+	}
+
 	// Initialize globalConsoleSys system
 	globalConsoleSys = NewConsoleLogger(GlobalContext)
 	logger.AddSystemTarget(globalConsoleSys)

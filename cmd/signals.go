@@ -62,8 +62,10 @@ func handleSignals() {
 		}
 
 		if objAPI := newObjectLayerFn(); objAPI != nil {
-			oerr = objAPI.Shutdown(context.Background())
-			logger.LogIf(context.Background(), oerr)
+			//stop service and fs should have root privilege
+			stopctx := newOpfsRoot(context.Background())
+			oerr = objAPI.Shutdown(stopctx)
+			logger.LogIf(stopctx, oerr)
 		}
 
 		if srv := newConsoleServerFn(); srv != nil {

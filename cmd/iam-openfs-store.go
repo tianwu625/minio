@@ -1,49 +1,64 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
-	"sync"
-	"os"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
-	"strconv"
+	"os"
 	"path"
-	"unicode/utf8"
 	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/minio/minio/internal/auth"
-	"github.com/minio/minio/internal/logger"
 	"github.com/minio/minio/internal/config"
 	"github.com/minio/minio/internal/kms"
+	"github.com/minio/minio/internal/logger"
 )
 
 const (
-	OpfsConfigDir = "/var/lib/openfs/cconf/cur"
-	OpfsAuthFile = "/auth.conf"
+	OpfsConfigDir          = "/var/lib/openfs/cconf/cur"
+	OpfsAuthFile           = "/auth.conf"
+	OpfsPrefix             = "openfs"
+	OpfsCanionicalKeyLen    = 32
+	OpfsCanionicalUserIDLen = 64
+	// IAM User Canonical prefix
+	iamConfigUserIDDBPrefix      = iamConfigPrefix + "/useriddb/"
+	iamConfigUserIDDBUsersPrefix = iamConfigUserIDDBPrefix + "users/"
 )
 
 type IdUser struct {
-	Nt_passwd string    `json:"nt_passwd, omitempty"`
-	Shell string        `json:"shell, omitempty"`
-	AccessKey string    `json:"name"`
-	Pgroup int	    `json:"prim_group"`
-	SecretKey string    `json:"passwd"`
-	Home string	    `json:"home"`
-	Sgroups []int	    `json:"supl_groups, omitempty"`
-	Comments string	    `json:"comments"`
-	Uid int		    `json:"uid"`
+	Nt_passwd string `json:"nt_passwd, omitempty"`
+	Shell     string `json:"shell, omitempty"`
+	AccessKey string `json:"name"`
+	Pgroup    int    `json:"prim_group"`
+	SecretKey string `json:"passwd"`
+	Home      string `json:"home"`
+	Sgroups   []int  `json:"supl_groups, omitempty"`
+	Comments  string `json:"comments"`
+	Uid       int    `json:"uid"`
 }
 
 type IdGroup struct {
-	Gid int `json:"gid"`
+	Gid  int    `json:"gid"`
 	Name string `json:"name"`
 }
 
 type IdRecord struct {
-	Version int     `json:"version"`
-	IdUsers []IdUser   `json:"users, omitempty"`
+	Version  int       `json:"version"`
+	IdUsers  []IdUser  `json:"users, omitempty"`
 	IdGroups []IdGroup `json:"groups, omitempty"`
+}
+
+type MappedUserID struct {
+	Version        int       `json:"version"`
+	UserCanonialID string    `json:"usercanonialid"`
+	UpdateAt       time.Time `json:"updatedAt, omitempty"`
 }
 
 type IAMOpfsStore struct {
@@ -88,7 +103,7 @@ func (iamOpfs *IAMOpfsStore) getUsersSysType() UsersSysType {
 }
 
 func (iamOpfs *IAMOpfsStore) loadIAMConfigBytesWithMetadata(ctx context.Context, objPath string) ([]byte, ObjectInfo, error) {
-	data, meta, err := readConfigWithMetadata(ctx, nil, objPath)
+	data, meta, err := readConfigWithMetadata(ctx, iamOpfs.objAPI, objPath)
 	if err != nil {
 		return nil, meta, err
 	}
@@ -164,8 +179,9 @@ func loadOPFSConfig(ctx context.Context, objPath string) (*IdRecord, error) {
 }
 
 func createUserIdentityfromOPFS(uid IdUser) (*auth.Credentials, error) {
-	cred, err := auth.CreateCredentials(uid.AccessKey, uid.SecretKey)
+	cred, err := auth.CreateSignOnCredentials(uid.AccessKey, uid.SecretKey)
 	if err != nil {
+		logger.LogIf(nil, fmt.Errorf("accessKey=%v , secretKey=%v", uid.AccessKey, uid.SecretKey))
 		return nil, err
 	}
 	claims := make(map[string]interface{})
@@ -190,6 +206,7 @@ func createGroupInfoOPFS(gid IdGroup, ids *IdRecord) *GroupInfo {
 		}
 	}
 	g := newGroupInfo(members)
+	g.Attr = gid.Gid
 	return &g
 }
 
@@ -253,6 +270,11 @@ func (iamOpfs *IAMOpfsStore) loadUser(ctx context.Context, user string, userType
 				if err != nil {
 					return err
 				}
+				mu, err := iamOpfs.loadUserCanonicalID(ctx, user, userType)
+				if err != nil {
+					return err
+				}
+				cred.Claims["usercanionialid"] = mu.UserCanonialID
 				m[user] = *cred
 				break
 			}
@@ -309,6 +331,11 @@ func (iamOpfs *IAMOpfsStore) loadUsers(ctx context.Context, userType IAMUserType
 			if err != nil {
 				return err
 			}
+			mu, err := iamOpfs.loadUserCanonicalID(ctx, uid.AccessKey, userType)
+			if err != nil {
+				return err
+			}
+			cred.Claims["usercanionialid"] = mu.UserCanonialID
 			m[cred.AccessKey] = *cred
 		}
 		return nil
@@ -340,13 +367,13 @@ func (iamOpfs *IAMOpfsStore) loadGroups(ctx context.Context, m map[string]GroupI
 	}
 	for _, gid := range ids.IdGroups {
 		ginfo := createGroupInfoOPFS(gid, ids)
-		m[strconv.FormatInt(int64(gid.Gid), 10)] = *ginfo
+		m[gid.Name] = *ginfo
 	}
 	return nil
 }
 
 func (iamOpfs *IAMOpfsStore) loadMappedPolicy(ctx context.Context, name string, userType IAMUserType, isGroup bool,
-					      m map[string]MappedPolicy,) error {
+	m map[string]MappedPolicy) error {
 	var p MappedPolicy
 	err := iamOpfs.loadIAMConfig(ctx, &p, getMappedPolicyPath(name, userType, isGroup))
 	if err != nil {
@@ -439,9 +466,15 @@ func (iamOpfs *IAMOpfsStore) deleteGroupInfo(ctx context.Context, name string) e
 }
 
 func (iamOpfs *IAMOpfsStore) loadAllFromOPFS(ctx context.Context, cache *iamCache) error {
+	//0. new root ctx for fs access management
+	ctx = newOpfsRoot(ctx)
 	// Loads things in the same order as `LoadIAMCache()`
 	//1. load policies docs
+	if err := iamOpfs.loadPolicyDocs(ctx, cache.iamPolicyDocsMap); err != nil {
+		return err
+	}
 	//2. set default canned policies
+	setDefaultCannedPolicies(cache.iamPolicyDocsMap)
 	//3. load users
 	if err := iamOpfs.loadUsers(ctx, regUser, cache.iamUsersMap); err != nil {
 		return err
@@ -451,7 +484,13 @@ func (iamOpfs *IAMOpfsStore) loadAllFromOPFS(ctx context.Context, cache *iamCach
 		return err
 	}
 	//5. load polices maped to users
+	if err := iamOpfs.loadMappedPolicies(ctx, regUser, false, cache.iamUserPolicyMap); err != nil {
+		return err
+	}
 	//6. load polices mapped to groups
+	if err := iamOpfs.loadMappedPolicies(ctx, regUser, true, cache.iamGroupPolicyMap); err != nil {
+		return err
+	}
 	//7. load service accounts
 	if err := iamOpfs.loadUsers(ctx, svcUser, cache.iamUsersMap); err != nil {
 		return err
@@ -467,4 +506,99 @@ func (iamOpfs *IAMOpfsStore) loadAllFromOPFS(ctx context.Context, cache *iamCach
 	//10. build user and group memberships
 	cache.buildUserGroupMemberships()
 	return nil
+}
+
+const (
+	canionialAlphaNumericTable = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+	canionialAlphaNumericTableLen = byte(len(canionialAlphaNumericTable))
+)
+
+func CreateCanonicalUserID(prefix string) (canonicalUserID string, err error) {
+	readBytes := func(size int) (data []byte, err error) {
+		data = make([]byte, size)
+		var n int
+		if n, err = rand.Read(data); err != nil {
+			return nil, err
+		} else if n != size {
+			return nil, fmt.Errorf("Not enough data. Expected to read: %v bytes, got: %v bytes", size, n)
+		}
+		return data, nil
+	}
+
+	MaxLen := OpfsCanionicalKeyLen - len(prefix)
+	keyBytes, err := readBytes(MaxLen)
+	if err != nil {
+		return "", err
+	}
+	for i := 0; i < MaxLen; i++ {
+		keyBytes[i] = canionialAlphaNumericTable[keyBytes[i]%canionialAlphaNumericTableLen]
+	}
+	var UserIDKeyBuffer bytes.Buffer
+	UserIDKeyBuffer.WriteString(prefix)
+	UserIDKeyBuffer.Write(keyBytes)
+	UserIDKeyBytes := UserIDKeyBuffer.Bytes()
+
+	UserID := make([]byte, hex.EncodedLen(len(UserIDKeyBytes)))
+	n := hex.Encode(UserID, UserIDKeyBytes)
+	if n != OpfsCanionicalUserIDLen {
+		logger.LogIf(nil, fmt.Errorf("id=%v, n=%v, should_len=%v", UserID, n, OpfsCanionicalUserIDLen))
+		return "", fmt.Errorf("create user canonical id failed")
+	}
+
+	return string(UserID), nil
+}
+
+func newMappedUserID(user string) (*MappedUserID, error) {
+	usercanonicalid, err := CreateCanonicalUserID(OpfsPrefix)
+	if err != nil {
+		return nil, err
+	}
+	var mapuserid = MappedUserID{
+		Version:        1,
+		UserCanonialID: usercanonicalid,
+		UpdateAt:       UTCNow(),
+	}
+	return &mapuserid, nil
+}
+
+func getMappedUserIDPath(user string, userType IAMUserType) string {
+	switch userType {
+	default:
+		return pathJoin(iamConfigUserIDDBUsersPrefix, user+".json")
+	}
+}
+
+func (iamOpfs *IAMOpfsStore) saveMappedUserID(ctx context.Context, user string, userType IAMUserType, mu MappedUserID, opts ...options) error {
+	return iamOpfs.saveIAMConfig(ctx, mu, getMappedUserIDPath(user, userType), opts...)
+}
+
+func (iamOpfs *IAMOpfsStore) loadUserCanonicalID(ctx context.Context, user string, userType IAMUserType) (*MappedUserID, error) {
+	var gmu MappedUserID
+	err := iamOpfs.loadIAMConfig(ctx, &gmu, getMappedUserIDPath(user, userType))
+	if err != nil {
+		if err == errConfigNotFound {
+			mu, err := newMappedUserID(user)
+			if err != nil {
+				return nil, err
+			}
+			err = iamOpfs.saveMappedUserID(ctx, user, userType, *mu)
+			if err != nil {
+				return nil, err
+			}
+			return mu, nil
+		}
+		return nil, err
+	}
+
+	return &gmu, nil
+}
+
+func (iamOpfs *IAMOpfsStore) GetUserCanionialID(cred *auth.Credentials) (string, error) {
+	usercanionialid, ok := cred.Claims["usercanionialid"].(string)
+	if !ok {
+		return "", fmt.Errorf("get user canionial id failed, accesskey %v, claims %v", cred.AccessKey, cred.Claims)
+	}
+
+	return usercanionialid, nil
 }

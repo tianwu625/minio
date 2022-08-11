@@ -103,6 +103,17 @@ const (
 	// Dummy putBucketACL
 	AmzACL = "x-amz-acl"
 
+	// putBucketACL Grant Read
+	AmzGrantRead = "x-amz-grant-read"
+	// putBucketACL Grant Write
+	AmzGrantWrite = "x-amz-grant-write"
+	// putBucketACL Grant Acp Read
+	AmzGrantReadAcp = "x-amz-grant-read-acp"
+	// putBucketACL Grant Acp Write
+	AmzGrantWriteAcp = "x-amz-grant-write-acp"
+	// putBucketACL Grant Full Control
+	AmzGrantFullControl = "x-amz-grant-full-control"
+
 	// Signature V4 related contants.
 	AmzContentSha256        = "X-Amz-Content-Sha256"
 	AmzDate                 = "X-Amz-Date"

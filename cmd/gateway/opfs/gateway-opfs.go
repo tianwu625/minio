@@ -79,7 +79,7 @@ func (o *OPFS) NewGatewayLayer(creds madmin.Credentials) (minio.ObjectLayer, err
 	if err != nil {
 		return nil, err
 	}
-	return &opfsObjects{newObject}, nil
+	return &opfsObjects{newObject, newObject}, nil
 }
 
 // IsListenSupported returns whether listen bucket notification is applicable for this gateway.
@@ -97,6 +97,7 @@ func (o *opfsObjects) StorageInfo(ctx context.Context) (si minio.StorageInfo, _ 
 // opfsObjects implements gateway for MinIO and S3 compatible object storage servers.
 type opfsObjects struct {
 	minio.ObjectLayer
+	minio.ObjectAcler
 }
 
 func (o *opfsObjects) IsTaggingSupported() bool {

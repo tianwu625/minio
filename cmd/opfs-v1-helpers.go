@@ -18,6 +18,7 @@ import (
 	iofs "io/fs"
 	"os"
 	pathutil "path"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -37,6 +38,10 @@ var errGetattrFailed = errors.New("getattr volume failed")
 var errIOError = errors.New("IO failed")
 var errUtimeFailed = errors.New("utime dir or file failed")
 var errTruncateFailed = errors.New("truncate failed")
+var errNoCred = errors.New("get cred failed")
+var errAcladdFailed = errors.New("acl add failed")
+var errSetattrFailed = errors.New("set attr failed")
+var errAclgetFailed = errors.New("acl get failed")
 
 type opfsCroot struct {
 	fs *C.ofapi_fs_t
@@ -96,6 +101,9 @@ func opfsMkdir(ctx context.Context, dirPath string) (err error) {
 	//FIXME only for test and demo
 	//dirPath = strings.ReplaceAll(dirPath, root.fspath, root.rootpath)
 
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
 	parentdir, bucketname := filepath.Split(strings.TrimSuffix(dirPath, SlashSeparator))
 	parentfd, err := opfsCopen(parentdir)
 	if err != nil {
@@ -136,6 +144,10 @@ func opfsRemoveFile(ctx context.Context, filePath string) (err error) {
 		return err
 	}
 
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+
 	//filePath = strings.ReplaceAll(filePath, root.fspath, root.rootpath)
 	parentdir, filename := filepath.Split(strings.TrimSuffix(filePath, SlashSeparator))
 	parentfd, err := opfsCopen(parentdir)
@@ -163,6 +175,10 @@ func opfsRemoveDir(ctx context.Context, dirPath string) (err error) {
 
 	if err = checkPathLength(dirPath); err != nil {
 		logger.LogIf(ctx, err)
+		return err
+	}
+
+	if err := setUserCred(ctx); err != nil {
 		return err
 	}
 
@@ -234,6 +250,11 @@ func opfsRemoveAll(ctx context.Context, dirPath string) (err error) {
 		logger.LogIf(ctx, err)
 		return err
 	}
+
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+
 	//remove all things
 	dirPath = strings.TrimSuffix(dirPath, SlashSeparator)
 	fd, err := opfsCopen(dirPath)
@@ -400,6 +421,9 @@ func opfsStat(ctx context.Context, statLoc string) (os.FileInfo, error) {
 		logger.LogIf(ctx, err)
 		return nil, err
 	}
+	if err := setUserCred(ctx); err != nil {
+		return nil, err
+	}
 	//FIXME only for test and demo
 	//statLoc = strings.ReplaceAll(statLoc, root.fspath, root.rootpath)
 	return opfsStatPath(statLoc)
@@ -551,7 +575,6 @@ func (opf *opfsFile) Write(p []byte) (n int, err error) {
 	} else {
 		cbuffer = unsafe.Pointer(&_zero)
 	}
-
 	opf.mutex.Lock()
 	defer opf.mutex.Unlock()
 	ret := C.ofapi_write(opf.fd, C.uint64_t(opf.offset), cbuffer, C.uint32_t(len(p)))
@@ -721,6 +744,10 @@ func opfsCreateFile(ctx context.Context, filePath string, reader io.Reader, fall
 		return 0, err
 	}
 
+	if err := setUserCred(ctx); err != nil {
+		return 0, err
+	}
+
 	if err := opfsMkdirAll(pathutil.Dir(filePath), 0o777); err != nil {
 		return 0, err
 	}
@@ -729,6 +756,7 @@ func opfsCreateFile(ctx context.Context, filePath string, reader io.Reader, fall
 	if globalFSOSync {
 		flags |= os.O_SYNC
 	}
+
 	writer, err := lock.OpfsOpen(filePath, flags, 0o666)
 	if err != nil {
 		return 0, osErrToFileErr(err)
@@ -796,6 +824,10 @@ func opfsTouch(ctx context.Context, statLoc string) error {
 
 	statLoc = strings.TrimSuffix(statLoc, SlashSeparator)
 	//statLoc = strings.ReplaceAll(strings.TrimSuffix(statLoc, SlashSeparator), root.fspath, root.rootpath)
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+
 	var fd *C.ofapi_fd_t
 	var uatime C.struct_timeval
 	var umtime C.struct_timeval
@@ -840,6 +872,11 @@ func opfsOpenFile(ctx context.Context, readPath string, offset int64) (io.ReadCl
 		return nil, 0, errInvalidArgument
 	}
 	if err := checkPathLength(readPath); err != nil {
+		logger.LogIf(ctx, err)
+		return nil, 0, err
+	}
+
+	if err := setUserCred(ctx); err != nil {
 		logger.LogIf(ctx, err)
 		return nil, 0, err
 	}
@@ -1116,6 +1153,10 @@ func opfsDeleteFile(ctx context.Context, basePath, deletePath string) error {
 		return err
 	}
 
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+
 	if err := opfsdeleteFile(basePath, deletePath, false); err != nil {
 		if err != errFileNotFound {
 			logger.LogIf(ctx, err)
@@ -1168,4 +1209,271 @@ func opfsRemoveMeta(ctx context.Context, basePath, deletePath, tmpDir string) er
 		return opfsDeleteFile(ctx, tmpDir, tmpPath)
 	}
 	return opfsDeleteFile(ctx, basePath, deletePath)
+}
+
+const (
+	opfsCredKey = "opfscred"
+	//s3 acl Max Length is 5, include READ,WRITE,ACLREAD,ACLWRITE,FULLCONTROL
+	permissionMaxLen = 5
+)
+
+func getOpfsCred(ctx context.Context) (uid, gid int, err error) {
+	claims, ok := ctx.Value(opfsCredKey).(map[string]interface{})
+	if !ok {
+		logger.LogIf(ctx, errNoCred)
+		return 0, 0, errNoCred
+	}
+	return claims["userid"].(int), claims["groupid"].(int), nil
+}
+
+func setUserCred(ctx context.Context) error {
+	uid, gid, err := getOpfsCred(ctx)
+	if err != nil {
+		return err
+	}
+	C.ofapi_setcred(C.uint32_t(uid), C.uint32_t(gid))
+	return nil
+}
+
+func setOpfsSessionRoot() {
+	C.ofapi_setcred(C.uint32_t(0), C.uint32_t(0))
+}
+
+func opfsMkdirAllWithCred(ctx context.Context, path string, mode os.FileMode) error {
+
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+	return opfsMkdirAll(path, mode)
+}
+
+func opfsOpenWithCred(ctx context.Context, path string) (*opfsFile, error) {
+
+	if err := setUserCred(ctx); err != nil {
+		return nil, err
+	}
+	return opfsOpen(path)
+}
+
+//for acl operate
+type opfsAcl struct {
+	uid     int
+	gid     int
+	acltype string
+	aclbits int
+}
+
+const (
+	AclDirRead = int(C.OFAPI_ACE_MASK_DIR_LIST | C.OFAPI_ACE_MASK_XATTR_READ |
+		C.OFAPI_ACE_MASK_ATTR_READ)
+	AclFileRead = int(C.OFAPI_ACE_MASK_FILE_DATA_READ | C.OFAPI_ACE_MASK_XATTR_READ |
+		C.OFAPI_ACE_MASK_ATTR_READ)
+	AclDirWrite = int(C.OFAPI_ACE_MASK_DIR_ADD_FILE | C.OFAPI_ACE_MASK_DIR_ADD_DIR |
+		C.OFAPI_ACE_MASK_XATTR_WRITE | C.OFAPI_ACE_MASK_ATTR_WRITE |
+		C.OFAPI_ACE_MASK_DELETE_CHILD | C.OFAPI_ACE_MASK_DELETE)
+	AclFileWrite = int(C.OFAPI_ACE_MASK_FILE_DATA_WRITE | C.OFAPI_ACE_MASK_XATTR_WRITE |
+		C.OFAPI_ACE_MASK_ATTR_WRITE | C.OFAPI_ACE_MASK_FILE_DATA_APPEND |
+		C.OFAPI_ACE_MASK_DELETE)
+	AclRead           = int(C.OFAPI_ACE_MASK_ACL_READ)
+	AclWrite          = int(C.OFAPI_ACE_MASK_ACL_WRITE)
+	AclDirFullControl = AclDirRead | AclDirWrite | AclWrite | AclRead |
+		int(C.OFAPI_ACE_MASK_CHANGE_OWNER|C.OFAPI_ACE_MASK_SYNC|
+			C.OFAPI_ACE_MASK_EXECUTE)
+	AclFileFullControl = AclFileRead | AclFileWrite | AclWrite | AclRead |
+		int(C.OFAPI_ACE_MASK_CHANGE_OWNER|C.OFAPI_ACE_MASK_SYNC|
+			C.OFAPI_ACE_MASK_EXECUTE)
+)
+
+func s3mapopfs(perm string, isDir bool) int {
+	var aclbits int
+	switch perm {
+	case GrantPermRead:
+		if isDir {
+			aclbits = AclDirRead
+		} else {
+			aclbits = AclFileRead
+		}
+	case GrantPermWrite:
+		if isDir {
+			aclbits = AclDirWrite
+		} else {
+			aclbits = AclFileWrite
+		}
+	case GrantPermReadAcp:
+		aclbits = AclRead
+	case GrantPermWriteAcp:
+		aclbits = AclWrite
+	case GrantPermFullControl:
+		if isDir {
+			aclbits = AclDirFullControl
+		} else {
+			aclbits = AclFileFullControl
+		}
+	default:
+	}
+
+	return aclbits
+}
+
+func opfsmaps3List(opfsacl int, isDir bool) []string {
+	permissionList := make([]string, 0, permissionMaxLen)
+	if isDir {
+		if opfsacl&AclDirFullControl == AclDirFullControl {
+			permissionList = append(permissionList, "FULL_CONTROL")
+			return permissionList
+		}
+		if opfsacl&AclDirRead == AclDirRead {
+			permissionList = append(permissionList, "READ")
+		}
+		if opfsacl&AclDirWrite == AclDirWrite {
+			permissionList = append(permissionList, "WRITE")
+		}
+	} else {
+		if opfsacl&AclFileFullControl == AclFileFullControl {
+			permissionList = append(permissionList, "FULL_CONTROL")
+			return permissionList
+		}
+		if opfsacl&AclFileRead == AclFileRead {
+			permissionList = append(permissionList, "READ")
+		}
+		if opfsacl&AclFileWrite == AclFileWrite {
+			permissionList = append(permissionList, "WRITE")
+		}
+	}
+	if opfsacl&AclRead == AclRead {
+		permissionList = append(permissionList, "READ_ACP")
+	}
+	if opfsacl&AclWrite == AclWrite {
+		permissionList = append(permissionList, "WRITE_ACP")
+	}
+
+	return permissionList
+}
+
+func opfsSetAclWithCred(ctx context.Context, path string, grants []opfsAcl) error {
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+	oa := make([]C.struct_oace, 0, len(grants))
+	for _, og := range grants {
+		var a C.struct_oace
+		a.oe_type = C.OFAPI_ACE_TYPE_ALLOWED
+		a.oe_flag = C.OFAPI_ACE_FLAG_NO_PROPAGET
+		switch og.acltype {
+		case UserType:
+			a.oe_credtype = C.OFAPI_ACE_CRED_UID
+			a.oe_cred = C.uint32_t(og.uid)
+		case GroupType:
+			a.oe_credtype = C.OFAPI_ACE_CRED_GID
+			a.oe_cred = C.uint32_t(og.gid)
+		case OwnerType:
+			a.oe_credtype = C.OFAPI_ACE_CRED_OWNER
+			a.oe_cred = C.uint32_t(og.uid)
+		case EveryType:
+			a.oe_credtype = C.OFAPI_ACE_CRED_EVERYONE
+		default:
+			return NotImplemented{}
+		}
+		a.oe_mask = C.uint32_t(og.aclbits)
+		oa = append(oa, a)
+	}
+	var aid C.uint64_t
+	err := C.ofapi_acladd(root.fs, toCPoint(oa), C.uint32_t(len(oa)), &aid)
+	if err != C.int(0) {
+		return errAcladdFailed
+	}
+	fd, nerr := opfsCopen(path)
+	defer C.ofapi_close(fd)
+	if nerr != nil {
+		return nerr
+	}
+	err = C.ofapi_setattr(fd, C.uint32_t(0), C.uint32_t(0), C.uint32_t(0), aid)
+	if err != C.int(0) {
+		return errSetattrFailed
+	}
+
+	return nil
+}
+
+func (csoa *C.struct_oace) toSlice(slen int) []C.struct_oace {
+	var as []C.struct_oace
+	asHdr := (*reflect.SliceHeader)(unsafe.Pointer(&as))
+	asHdr.Data = uintptr(unsafe.Pointer(csoa))
+	asHdr.Len = slen
+	asHdr.Cap = slen
+	return as
+}
+
+func toCPoint(as []C.struct_oace) *C.struct_oace {
+	asHdr := (*reflect.SliceHeader)(unsafe.Pointer(&as))
+	return (*C.struct_oace)(unsafe.Pointer(uintptr(asHdr.Data)))
+}
+
+func opfsGetAclWithCred(ctx context.Context, path string) ([]opfsAcl, error) {
+	if err := setUserCred(ctx); err != nil {
+		return nil, err
+	}
+	fd, nerr := opfsCopen(path)
+	if nerr != nil {
+		return nil, nerr
+	}
+
+	var oace *C.struct_oace
+	var acecnt C.uint32_t
+	err := C.ofapi_aclqry(fd, &oace, &acecnt)
+	if err != C.int(0) {
+		return nil, errAclgetFailed
+	}
+
+	oa := oace.toSlice(int(acecnt))
+
+	opfsgrants := make([]opfsAcl, 0, int(acecnt))
+	for i := 0; i < int(acecnt); i++ {
+		if oa[i].oe_type == C.OFAPI_ACE_TYPE_DENIED {
+			continue
+		}
+		if oa[i].oe_flag&C.OFAPI_ACE_FLAG_NO_PROPAGET == C.uint32_t(0) &&
+			oa[i].oe_flag != C.uint32_t(0) {
+			continue
+		}
+		var og opfsAcl
+		switch oa[i].oe_credtype {
+		case C.OFAPI_ACE_CRED_UID:
+			og.acltype = UserType
+			og.uid = int(oa[i].oe_cred)
+		case C.OFAPI_ACE_CRED_GID:
+			og.acltype = GroupType
+			og.gid = int(oa[i].oe_cred)
+		case C.OFAPI_ACE_CRED_OWNER:
+			og.acltype = OwnerType
+			og.uid = int(oa[i].oe_cred)
+		case C.OFAPI_ACE_CRED_EVERYONE:
+			og.acltype = EveryType
+		default:
+			og.acltype = ""
+		}
+		if og.acltype == "" {
+			continue
+		}
+		og.aclbits = int(oa[i].oe_mask)
+		opfsgrants = append(opfsgrants, og)
+	}
+
+	return opfsgrants, nil
+}
+
+func opfsGetUidGid(path string) (int, int, error) {
+	fd, err := opfsCopen(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer C.ofapi_close(fd)
+
+	var oatt C.struct_oatt
+	ret := C.ofapi_getattr(fd, &oatt)
+	if ret != C.int(0) {
+		return 0, 0, errGetattrFailed
+	}
+
+	return int(oatt.oa_uid), int(oatt.oa_gid), nil
 }

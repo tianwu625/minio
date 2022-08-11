@@ -283,6 +283,9 @@ func checkClaimsFromToken(r *http.Request, cred auth.Credentials) (map[string]in
 		return claims, ErrNone
 	}
 
+	if cred.IsOPFSAccount() {
+		return cred.Claims, ErrNone
+	}
 	claims := xjwt.NewMapClaims()
 	return claims.Map(), ErrNone
 }
@@ -323,6 +326,7 @@ func checkRequestAuthTypeCredential(ctx context.Context, r *http.Request, action
 		}
 		cred, owner, s3Err = getReqAccessKeyV4(r, region, serviceS3)
 	}
+
 	if s3Err != ErrNone {
 		return cred, owner, s3Err
 	}
@@ -658,4 +662,41 @@ func isPutActionAllowed(ctx context.Context, atype authType, bucketName, objectN
 		return ErrNone
 	}
 	return ErrAccessDenied
+}
+
+func getRequestAuthTypeCredential(ctx context.Context, r *http.Request) (cred auth.Credentials, s3Err APIErrorCode) {
+	switch getRequestAuthType(r) {
+	case authTypeUnknown, authTypeStreamingSigned:
+		return cred, ErrSignatureVersionNotSupported
+	case authTypePresignedV2, authTypeSignedV2:
+		if s3Err = isReqAuthenticatedV2(r); s3Err != ErrNone {
+			return cred, s3Err
+		}
+		cred, _, s3Err = getReqAccessKeyV2(r)
+	case authTypeSigned, authTypePresigned:
+		cred, _, s3Err = getReqAccessKeyV4(r, "", serviceS3)
+	}
+
+	if s3Err != ErrNone {
+		return cred, s3Err
+	}
+	return cred, ErrNone
+}
+
+func getRequestAuthPutAction(ctx context.Context, r *http.Request) (cred auth.Credentials, s3Err APIErrorCode) {
+	switch getRequestAuthType(r) {
+	case authTypeUnknown:
+		return cred, ErrSignatureVersionNotSupported
+	case authTypeSignedV2, authTypePresignedV2:
+		cred, _, s3Err = getReqAccessKeyV2(r)
+	case authTypeStreamingSigned, authTypePresigned, authTypeSigned:
+		region := globalSite.Region
+		cred, _, s3Err = getReqAccessKeyV4(r, region, serviceS3)
+	}
+
+	if s3Err != ErrNone {
+		return cred, s3Err
+	}
+
+	return cred, ErrNone
 }

@@ -48,6 +48,21 @@ const (
 	// There is no max length enforcement for secret keys
 	secretKeyMaxLen = 40
 
+	// Minimum length for OPFS user name for signing on.
+	usernameMinLen = 3
+
+	// Maximum length for OPFS user name for signing on.
+	// There is no max length enforcement for user name
+	usernameMaxLen = 20
+
+	// Minimum length password for OPFS
+	passwordMinLen = 0
+
+	// Maximum password length for OPFS
+	// is used when autogenerating new credentials.
+	// There is no max length enforcement for password
+	passwordMaxLen = 40
+
 	// Alpha numeric table used for generating access keys.
 	alphaNumericTable = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
@@ -59,6 +74,8 @@ const (
 var (
 	ErrInvalidAccessKeyLength = fmt.Errorf("access key length should be between %d and %d", accessKeyMinLen, accessKeyMaxLen)
 	ErrInvalidSecretKeyLength = fmt.Errorf("secret key length should be between %d and %d", secretKeyMinLen, secretKeyMaxLen)
+	ErrInvalidUsernameLength  = fmt.Errorf("user name length should be between %d and %d", usernameMinLen, usernameMaxLen)
+	ErrInvalidPasswordLength  = fmt.Errorf("password length should be between %d and %d", passwordMinLen, passwordMaxLen)
 )
 
 // IsAccessKeyValid - validate access key for right length.
@@ -137,6 +154,23 @@ func (cred Credentials) IsTemp() bool {
 // IsServiceAccount - returns whether credential is a service account or not
 func (cred Credentials) IsServiceAccount() bool {
 	return cred.ParentUser != "" && (cred.Expiration.IsZero() || cred.Expiration.Equal(timeSentinel))
+}
+
+// IsOPFSaccount - returns whether credential is a opfs account convert to minio or not
+func (cred Credentials) IsOPFSAccount() bool {
+	if cred.Claims == nil {
+		return false
+	}
+
+	if _, ok := cred.Claims["userid"]; !ok {
+		return false
+	}
+
+	if _, ok := cred.Claims["groupid"]; !ok {
+		return false
+	}
+
+	return true
 }
 
 // IsValid - returns whether credential is valid or not.
@@ -314,5 +348,29 @@ func CreateCredentials(accessKey, secretKey string) (cred Credentials, err error
 	cred.SecretKey = secretKey
 	cred.Expiration = timeSentinel
 	cred.Status = AccountOn
+	return cred, nil
+}
+
+func IsUsernameValid(username string) bool {
+	return len(username) >= usernameMinLen
+}
+
+func IsPasswordValid(password string) bool {
+	return len(password) >= passwordMinLen
+}
+
+func CreateSignOnCredentials(username, passwd string) (cred Credentials, err error) {
+	if !IsUsernameValid(username) {
+		return cred, ErrInvalidUsernameLength
+	}
+	if !IsPasswordValid(passwd) {
+		return cred, ErrInvalidPasswordLength
+	}
+
+	cred.AccessKey = username
+	cred.SecretKey = passwd
+	cred.Expiration = timeSentinel
+	cred.Status = AccountOn
+
 	return cred, nil
 }

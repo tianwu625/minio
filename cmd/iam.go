@@ -58,6 +58,9 @@ const (
 	// This mode uses users and groups from a configured LDAP
 	// server.
 	LDAPUsersSysType UsersSysType = "LDAPUsersSys"
+
+	//This mode opfs user and groups from a disk
+	OPFSUsersSysType UsersSysType = "OPFSUsersSys"
 )
 
 const (
@@ -177,7 +180,8 @@ func (sys *IAMSys) initStore(objAPI ObjectLayer, etcdClient *etcd.Client) {
 			if globalGatewayName == NASBackendGateway {
 				sys.store = &IAMStoreSys{newIAMObjectStore(objAPI, sys.usersSysType)}
 			} else if globalGatewayName == OPFSBackendGateway {
-				sys.store = &IAMStoreSys{newIAMObjectStore(objAPI, sys.usersSysType)}
+				sys.EnableOPFSSys()
+				sys.store = &IAMStoreSys{newIAMOpfsStore(objAPI, sys.usersSysType)}
 			} else {
 				sys.store = &IAMStoreSys{newIAMDummyStore(sys.usersSysType)}
 				logger.Info("WARNING: %s gateway is running in-memory IAM store, for persistence please configure etcd",
@@ -1741,6 +1745,27 @@ func (sys *IAMSys) IsAllowed(args iampolicy.Args) bool {
 // EnableLDAPSys - enable ldap system users type.
 func (sys *IAMSys) EnableLDAPSys() {
 	sys.usersSysType = LDAPUsersSysType
+}
+
+func (sys *IAMSys) EnableOPFSSys() {
+	sys.usersSysType = OPFSUsersSysType
+}
+
+// GetUserCredByCanionialID - get credential by canionial id
+func (sys *IAMSys) GetUserIdByCanionialID(userid string) (int, error) {
+	return sys.store.GetUserIdByCanionialID(userid)
+}
+
+func (sys *IAMSys) GetGroupIdByName(gname string) (int, error) {
+	return sys.store.GetGroupIdByName(gname)
+}
+
+func (sys *IAMSys) GetCanionialIdByUid(uid int) (string, error) {
+	return sys.store.GetCanionialIdByUid(uid)
+}
+
+func (sys *IAMSys) GetGroupNameByGid(gid int) (string, error) {
+	return sys.store.GetGroupNameByGid(gid)
 }
 
 // NewIAMSys - creates new config system object.

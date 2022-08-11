@@ -60,6 +60,12 @@ func (api objectAPIHandlers) GetBucketNotificationHandler(w http.ResponseWriter,
 		return
 	}
 
+	ctx, s3Error := newOpfsContext(ctx, r)
+	if s3Error != ErrNone {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
+		return
+	}
+
 	_, err := objAPI.GetBucketInfo(ctx, bucketName)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
@@ -128,6 +134,12 @@ func (api objectAPIHandlers) PutBucketNotificationHandler(w http.ResponseWriter,
 	bucketName := vars["bucket"]
 
 	if s3Error := checkRequestAuthType(ctx, r, policy.PutBucketNotificationAction, bucketName, ""); s3Error != ErrNone {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
+		return
+	}
+
+	ctx, s3Error := newOpfsContext(ctx, r)
+	if s3Error != ErrNone {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
 		return
 	}
