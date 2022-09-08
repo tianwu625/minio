@@ -1217,21 +1217,39 @@ const (
 	permissionMaxLen = 5
 )
 
-func getOpfsCred(ctx context.Context) (uid, gid int, err error) {
+func getOpfsCred(ctx context.Context) (uid int, gids []int, err error) {
 	claims, ok := ctx.Value(opfsCredKey).(map[string]interface{})
 	if !ok {
 		logger.LogIf(ctx, errNoCred)
-		return 0, 0, errNoCred
+		return uid, gids, errNoCred
 	}
-	return claims["userid"].(int), claims["groupid"].(int), nil
+	if uid, ok := claims[UserID].(int); !ok {
+		return uid, gids, errInvalidArgument
+	}
+	if gid, ok := claims[GroupID].(int); !ok {
+		return uid, gids, errInvalidArgument
+	} else {
+		gids = append(gids, gid)
+	}
+	if sgids, ok := claims[GroupIDs].([]int); ok {
+		gids = append(gids, sgids...)
+	}
+	return uid, gids, nil
+}
+
+func toCUint32Array(s []int) (*C.uint32_t, C.uint32_t) {
+	sHdr := (*reflect.SliceHeader)(unsafe.Pointer(&s))
+	cs := (*C.uint32_t)(unsafe.Pointer(uintptr(sHdr.Data)))
+	cl := (C.uint32_t)(sHdr.Len)
+	return cs, cl
 }
 
 func setUserCred(ctx context.Context) error {
-	uid, gid, err := getOpfsCred(ctx)
+	uid, gids, err := getOpfsCred(ctx)
 	if err != nil {
 		return err
 	}
-	C.ofapi_setcred(C.uint32_t(uid), C.uint32_t(gid))
+	C.ofapi_setcred(C.uint32_t(uid), C.uint32_t(gids[0]))
 	return nil
 }
 

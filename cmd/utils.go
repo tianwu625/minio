@@ -842,8 +842,8 @@ func newOpfsContext(ctx context.Context, r *http.Request) (rctx context.Context,
 	}
 	if cred.AccessKey == globalActiveCred.AccessKey && globalGatewayName == OPFSBackendGateway {
 		claims := make(map[string]interface{})
-		claims["userid"] = 0
-		claims["groupid"] = 0
+		claims[UserID] = 0
+		claims[GroupID] = 0
 		return context.WithValue(ctx, opfsCredKey, claims), ErrNone
 	}
 	if !cred.IsOPFSAccount() {
@@ -859,8 +859,8 @@ func newOpfsContextPutAction(ctx context.Context, r *http.Request) (rctx context
 	}
 	if cred.AccessKey == globalActiveCred.AccessKey && globalGatewayName == OPFSBackendGateway {
 		claims := make(map[string]interface{})
-		claims["userid"] = 0
-		claims["groupid"] = 0
+		claims[UserID] = 0
+		claims[GroupID] = 0
 		return context.WithValue(ctx, opfsCredKey, claims), ErrNone
 	}
 	if !cred.IsOPFSAccount() {
@@ -871,8 +871,8 @@ func newOpfsContextPutAction(ctx context.Context, r *http.Request) (rctx context
 
 func newOpfsRoot(ctx context.Context) context.Context {
 	claims := make(map[string]interface{})
-	claims["userid"] = 0
-	claims["groupid"] = 0
+	claims[UserID] = 0
+	claims[GroupID] = 0
 
 	return context.WithValue(ctx, opfsCredKey, claims)
 }

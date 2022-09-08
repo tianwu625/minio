@@ -178,6 +178,12 @@ func loadOPFSConfig(ctx context.Context, objPath string) (*IdRecord, error) {
 	return &ids, nil
 }
 
+const (
+	UserID = "userid"
+	GroupID = "groupid"
+	GroupIDs = "groupids"
+)
+
 func createUserIdentityfromOPFS(uid IdUser) (*auth.Credentials, error) {
 	cred, err := auth.CreateSignOnCredentials(uid.AccessKey, uid.SecretKey)
 	if err != nil {
@@ -185,8 +191,9 @@ func createUserIdentityfromOPFS(uid IdUser) (*auth.Credentials, error) {
 		return nil, err
 	}
 	claims := make(map[string]interface{})
-	claims["userid"] = uid.Uid
-	claims["groupid"] = uid.Pgroup
+	claims[UserID] = uid.Uid
+	claims[GroupID] = uid.Pgroup
+	claims[GroupIDs] = uid.Sgroups
 	cred.Claims = claims
 	return &cred, nil
 }
