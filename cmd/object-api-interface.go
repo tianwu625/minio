@@ -78,6 +78,8 @@ type ObjectOptions struct {
 	WalkAscending bool // return Walk results in ascending order of versions
 
 	PrefixEnabledFn func(prefix string) bool // function which returns true if versioning is enabled on prefix
+
+	AclGrant      []grant //acl grant for setting Acl
 }
 
 // ExpirationOptions represents object options for object expiration at objectLayer.
@@ -101,6 +103,11 @@ type BucketOptions struct {
 	LockEnabled       bool
 	VersioningEnabled bool
 	ForceCreate       bool // Create buckets even if they are already created.
+	AclGrant          []grant
+}
+
+func (b *BucketOptions) HaveAcl() bool {
+	return len(b.AclGrant) != 0
 }
 
 // DeleteBucketOptions provides options for DeleteBucket calls.
@@ -149,6 +156,10 @@ func (o *ObjectOptions) PutReplicationState() (r ReplicationState) {
 	r.ReplicationStatusInternal = rstatus
 	r.Targets = replicationStatusesMap(rstatus)
 	return
+}
+
+func (o *ObjectOptions) HaveAcl() bool {
+	return len(o.AclGrant) != 0
 }
 
 // LockType represents required locking for ObjectLayer operations

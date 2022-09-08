@@ -518,3 +518,15 @@ func grantsToEncode(grants []grant) []grantEncode {
 
 	return ge
 }
+
+func EncodeTogrants(ge []grantEncode) []grant {
+	var g []grant
+
+	ehdr := (*reflect.SliceHeader)(unsafe.Pointer(&ge))
+	hdr := (*reflect.SliceHeader)(unsafe.Pointer(&g))
+	hdr.Data = ehdr.Data
+	hdr.Len = ehdr.Len
+	hdr.Cap = ehdr.Cap
+
+	return g
+}

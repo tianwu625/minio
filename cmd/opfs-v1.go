@@ -264,6 +264,14 @@ func (ofs *OPFSObjects) MakeBucketWithLocation(ctx context.Context, bucket strin
 	if err = opfsMkdir(ctx, bucketDir); err != nil {
 		return toObjectErr(err, bucket)
 	}
+	//do acl here
+	//mini windows of create and set acl 
+	if opts.HaveAcl() {
+		if err := ofs.SetAcl(ctx, bucket, "", opts.AclGrant); err != nil {
+			logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
+			return err
+		}
+	}
 
 	meta := newBucketMetadata(bucket)
 	rootCtx := newOpfsRoot(ctx)
@@ -507,7 +515,7 @@ func (ofs *OPFSObjects) CopyObject(ctx context.Context, srcBucket, srcObject, ds
 		return ObjectInfo{}, err
 	}
 
-	objInfo, err := ofs.putObject(ctx, dstBucket, dstObject, srcInfo.PutObjReader, ObjectOptions{ServerSideEncryption: dstOpts.ServerSideEncryption, UserDefined: srcInfo.UserDefined})
+	objInfo, err := ofs.putObject(ctx, dstBucket, dstObject, srcInfo.PutObjReader, ObjectOptions{ServerSideEncryption: dstOpts.ServerSideEncryption, UserDefined: srcInfo.UserDefined, AclGrant: dstOpts.AclGrant})
 	if err != nil {
 		return oi, toObjectErr(err, dstBucket, dstObject)
 	}
@@ -869,6 +877,13 @@ func (ofs *OPFSObjects) putObject(ctx context.Context, bucket string, object str
 			logger.LogIf(ctx, err)
 			return ObjectInfo{}, toObjectErr(err, bucket, object)
 		}
+		//set acl for prefix object
+		if opts.HaveAcl() {
+			if err := ofs.SetAcl(ctx, bucket, object, opts.AclGrant); err != nil {
+				logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
+				return ObjectInfo{}, toObjectErr(err, bucket, object)
+			}
+		}
 		var fi os.FileInfo
 		if fi, err = opfsStatDir(ctx, pathJoin(ofs.fsPath, bucket, object)); err != nil {
 			return ObjectInfo{}, toObjectErr(err, bucket, object)
@@ -940,6 +955,13 @@ func (ofs *OPFSObjects) putObject(ctx context.Context, bucket string, object str
 	fsNSObjPath := pathJoin(ofs.fsPath, bucket, object)
 	if err = opfsRenameFile(ctx, fsTmpObjPath, fsNSObjPath); err != nil {
 		return ObjectInfo{}, toObjectErr(err, bucket, object)
+	}
+
+	if opts.HaveAcl() {
+		if err := ofs.SetAcl(ctx, bucket, object, opts.AclGrant); err != nil {
+			logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
+			return ObjectInfo{}, toObjectErr(err, bucket, object)
+		}
 	}
 
 	if bucket != minioMetaBucket {

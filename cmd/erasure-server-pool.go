@@ -701,6 +701,9 @@ func (z *erasureServerPools) NSScanner(ctx context.Context, bf *bloomFilter, upd
 // even if one of the sets fail to create buckets, we proceed all the successful
 // operations.
 func (z *erasureServerPools) MakeBucketWithLocation(ctx context.Context, bucket string, opts BucketOptions) error {
+	if opts.HaveAcl() {
+		return NotImplemented{}
+	}
 	g := errgroup.WithNErrs(len(z.serverPools))
 
 	// Lock the bucket name before creating.
@@ -925,6 +928,9 @@ func (z *erasureServerPools) GetObjectInfo(ctx context.Context, bucket, object s
 
 // PutObject - writes an object to least used erasure pool.
 func (z *erasureServerPools) PutObject(ctx context.Context, bucket string, object string, data *PutObjReader, opts ObjectOptions) (ObjectInfo, error) {
+	if opts.HaveAcl() {
+		return ObjectInfo{}, NotImplemented{}
+	}
 	// Validate put object input args.
 	if err := checkPutObjectArgs(ctx, bucket, object, z); err != nil {
 		return ObjectInfo{}, err

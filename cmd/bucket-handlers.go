@@ -752,6 +752,13 @@ func (api objectAPIHandlers) PutBucketHandler(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	//get acl
+	acl, err := getACLFromRequest(ctx, r)
+	if err != nil {
+		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+		return
+	}
+
 	if s3Error := checkRequestAuthType(ctx, r, policy.CreateBucketAction, bucket, ""); s3Error != ErrNone {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
 		return
@@ -781,7 +788,9 @@ func (api objectAPIHandlers) PutBucketHandler(w http.ResponseWriter, r *http.Req
 		Location:    location,
 		LockEnabled: objectLockEnabled,
 		ForceCreate: forceCreate,
+		AclGrant : acl,
 	}
+
 
 	if globalDNSConfig != nil {
 		sr, err := globalDNSConfig.Get(bucket)
@@ -838,7 +847,7 @@ func (api objectAPIHandlers) PutBucketHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	// Proceed to creating a bucket.
-	err := objectAPI.MakeBucketWithLocation(ctx, bucket, opts)
+	err = objectAPI.MakeBucketWithLocation(ctx, bucket, opts)
 	if _, ok := err.(BucketExists); ok {
 		// Though bucket exists locally, we send the site-replication
 		// hook to ensure all sites have this bucket. If the hook

@@ -50,16 +50,14 @@ func haveAclHeader(r *http.Request) bool {
 		r.Header.Get(xhttp.AmzGrantFullControl) != ""
 }
 
-func setACLWithCanned(ctx context.Context, aclAPI ObjectAcler, bucket, object, cannedACL string) error {
-
+func cannedStrTogrants(cannedACL string) ([]grant, error){
+	grants := make([]grant, 0, 3)
 	if cannedACL == ACLCannedAwsExecRead ||
 		cannedACL == ACLCannedBucketOwnerRead ||
 		cannedACL == ACLCannedBucketOwnerFullControl ||
 		cannedACL == ACLCannedLogDeliveryWrite {
-		return NotImplemented{}
+		return grants, NotImplemented{}
 	}
-
-	grants := make([]grant, 0, 3)
 	if cannedACL == ACLCannedPrivate {
 		g := grant{
 			Grantee: grantee{
@@ -127,6 +125,14 @@ func setACLWithCanned(ctx context.Context, aclAPI ObjectAcler, bucket, object, c
 		grants = append(grants, gowner)
 		grants = append(grants, gauthRead)
 	}
+	return grants, nil
+}
+
+func setACLWithCanned(ctx context.Context, aclAPI ObjectAcler, bucket, object, cannedACL string) error {
+	grants, err := cannedStrTogrants(cannedACL)
+	if err != nil {
+		return err
+	}
 	if err := aclAPI.SetAcl(ctx, bucket, object, grants); err != nil {
 		return err
 	}
@@ -181,13 +187,13 @@ func strConvGrants(ctx context.Context, strs, p string) ([]grant, error) {
 
 }
 
-func setACLWithHeader(ctx context.Context, aclAPI ObjectAcler, bucket, object, readstr, writestr, readacpstr, writeacpstr, fullstr string) error {
+func strTogrants(ctx context.Context, readstr, writestr, readacpstr, writeacpstr, fullstr string) ([]grant, error) {
 	grantsSum := make([]grant, 0)
 
 	if readstr != "" {
 		grants, err := strConvGrants(ctx, readstr, GrantPermRead)
 		if err != nil {
-			return err
+			return grantsSum, err
 		}
 		grantsSum = append(grantsSum, grants...)
 	}
@@ -195,7 +201,7 @@ func setACLWithHeader(ctx context.Context, aclAPI ObjectAcler, bucket, object, r
 	if writestr != "" {
 		grants, err := strConvGrants(ctx, writestr, GrantPermWrite)
 		if err != nil {
-			return err
+			return grantsSum, err
 		}
 		grantsSum = append(grantsSum, grants...)
 	}
@@ -203,7 +209,7 @@ func setACLWithHeader(ctx context.Context, aclAPI ObjectAcler, bucket, object, r
 	if readacpstr != "" {
 		grants, err := strConvGrants(ctx, readacpstr, GrantPermReadAcp)
 		if err != nil {
-			return err
+			return grantsSum, err
 		}
 		grantsSum = append(grantsSum, grants...)
 	}
@@ -211,7 +217,7 @@ func setACLWithHeader(ctx context.Context, aclAPI ObjectAcler, bucket, object, r
 	if writeacpstr != "" {
 		grants, err := strConvGrants(ctx, writeacpstr, GrantPermWriteAcp)
 		if err != nil {
-			return err
+			return grantsSum, err
 		}
 		grantsSum = append(grantsSum, grants...)
 	}
@@ -219,15 +225,63 @@ func setACLWithHeader(ctx context.Context, aclAPI ObjectAcler, bucket, object, r
 	if fullstr != "" {
 		grants, err := strConvGrants(ctx, fullstr, GrantPermFullControl)
 		if err != nil {
-			return err
+			return grantsSum, err
 		}
 		grantsSum = append(grantsSum, grants...)
 	}
 
+	return grantsSum, nil
+}
+
+func setACLWithHeader(ctx context.Context, aclAPI ObjectAcler, bucket, object, readstr, writestr, readacpstr, writeacpstr, fullstr string) error {
+	grantsSum, err := strTogrants(ctx, readstr, writestr, readacpstr, writeacpstr, fullstr)
+	if err != nil {
+		return err
+	}
 	if err := aclAPI.SetAcl(ctx, bucket, object, grantsSum); err != nil {
 		logger.LogIf(ctx, fmt.Errorf("objAPI set fail, err=%v", err))
 		return err
 	}
 
 	return nil
+}
+
+func getACLFromRequest(ctx context.Context, r *http.Request) ([]grant, error) {
+	acl := make([]grant, 0)
+	if haveAclHeader(r) {
+		grants, err := strTogrants(ctx, r.Header.Get(xhttp.AmzGrantRead),
+			                     r.Header.Get(xhttp.AmzGrantWrite),
+			                     r.Header.Get(xhttp.AmzGrantReadAcp),
+					     r.Header.Get(xhttp.AmzGrantWriteAcp),
+					     r.Header.Get(xhttp.AmzGrantFullControl))
+		if err != nil {
+			logger.LogIf(ctx, fmt.Errorf("read %v, write %v, read-acp %v, write-acp %v, full %v",
+		                                    r.Header.Get(xhttp.AmzGrantRead),
+                                                    r.Header.Get(xhttp.AmzGrantWrite),
+                                                    r.Header.Get(xhttp.AmzGrantReadAcp),
+						    r.Header.Get(xhttp.AmzGrantWriteAcp),
+						    r.Header.Get(xhttp.AmzGrantFullControl)))
+			return grants, err
+		}
+		if len(acl) != 0 {
+			logger.LogIf(ctx, fmt.Errorf("acl %v", acl))
+			return grants, err
+		}
+		acl = grants
+	}
+
+	if aclHeader := r.Header.Get(xhttp.AmzACL); aclHeader != "" {
+		grants, err := cannedStrTogrants(aclHeader)
+		if err != nil {
+			logger.LogIf(ctx, fmt.Errorf("canned acl %v", aclHeader))
+			return grants, err
+		}
+		if len(acl) != 0 {
+			logger.LogIf(ctx, fmt.Errorf("acl %v", acl))
+			return grants, err
+		}
+		acl = grants
+	}
+
+	return acl, nil
 }

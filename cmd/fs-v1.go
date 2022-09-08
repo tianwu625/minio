@@ -428,7 +428,7 @@ func (fs *FSObjects) statBucketDir(ctx context.Context, bucket string) (os.FileI
 
 // MakeBucketWithLocation - create a new bucket, returns if it already exists.
 func (fs *FSObjects) MakeBucketWithLocation(ctx context.Context, bucket string, opts BucketOptions) error {
-	if opts.LockEnabled || opts.VersioningEnabled {
+	if opts.LockEnabled || opts.VersioningEnabled || opts.HaveAcl() {
 		return NotImplemented{}
 	}
 
@@ -989,7 +989,7 @@ func (fs *FSObjects) GetObjectInfo(ctx context.Context, bucket, object string, o
 // Additionally writes `fs.json` which carries the necessary metadata
 // for future object operations.
 func (fs *FSObjects) PutObject(ctx context.Context, bucket string, object string, r *PutObjReader, opts ObjectOptions) (objInfo ObjectInfo, err error) {
-	if opts.Versioned {
+	if opts.Versioned || opts.HaveAcl() {
 		return objInfo, NotImplemented{}
 	}
 
@@ -1014,6 +1014,9 @@ func (fs *FSObjects) PutObject(ctx context.Context, bucket string, object string
 
 // putObject - wrapper for PutObject
 func (fs *FSObjects) putObject(ctx context.Context, bucket string, object string, r *PutObjReader, opts ObjectOptions) (objInfo ObjectInfo, retErr error) {
+	if opts.HaveAcl() {
+		return objInfo, NotImplemented{}
+	}
 	data := r.Reader
 
 	// No metadata is set, allocate a new one.

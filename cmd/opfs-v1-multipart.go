@@ -29,10 +29,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"encoding/xml"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/pkg/trie"
+)
+//set tmp acl file path
+const (
+	aclXMLFile = "acl.xml"
 )
 
 // Returns EXPORT/.minio.sys/multipart/SHA256/UPLOADID
@@ -241,6 +246,17 @@ func (ofs *OPFSObjects) NewMultipartUpload(ctx context.Context, bucket, object s
 	}
 
 	if err = opfsWriteFile(pathJoin(uploadIDDir, ofs.metaJSONFile), fsMetaBytes, 0o666); err != nil {
+		logger.LogIf(ctx, err)
+		return "", err
+	}
+	ge := grantsToEncode(opts.AclGrant)
+	aclXMLBytes, err := xml.Marshal(ge)
+	if err != nil {
+		logger.LogIf(ctx, err)
+		return "", err
+	}
+
+	if err = opfsWriteFile(pathJoin(uploadIDDir, aclXMLFile), aclXMLBytes, 0o666); err != nil {
 		logger.LogIf(ctx, err)
 		return "", err
 	}
@@ -764,10 +780,29 @@ func (ofs *OPFSObjects) CompleteMultipartUpload(ctx context.Context, bucket stri
 		return oi, toObjectErr(err, bucket, object)
 	}
 
+	aclXMLBuf, err := opfsReadFile(pathJoin(uploadIDDir, aclXMLFile))
+	if err != nil {
+		logger.LogIf(ctx, err)
+		return oi, toObjectErr(err, bucket, object)
+	}
+	ge := make([]grantEncode, 0)
+	err = xml.Unmarshal(aclXMLBuf, &ge)
+	if err != nil {
+		logger.LogIf(ctx, err)
+		return oi, toObjectErr(err, bucket, object)
+	}
+
+	acl := EncodeTogrants(ge)
+
 	err = opfsRenameFile(ctx, appendFilePath, pathJoin(ofs.fsPath, bucket, object))
 	if err != nil {
 		logger.LogIf(ctx, err)
 		return oi, toObjectErr(err, bucket, object)
+	}
+
+	if err := ofs.SetAcl(ctx, bucket, object, acl); err != nil {
+		logger.LogIf(ctx, err)
+		return oi, err
 	}
 
 	// Purge multipart folders
