@@ -1337,32 +1337,32 @@ func opfsmaps3List(opfsacl int, isDir bool) []string {
 	permissionList := make([]string, 0, permissionMaxLen)
 	if isDir {
 		if opfsacl&AclDirFullControl == AclDirFullControl {
-			permissionList = append(permissionList, "FULL_CONTROL")
+			permissionList = append(permissionList, GrantPermFullControl)
 			return permissionList
 		}
 		if opfsacl&AclDirRead == AclDirRead {
-			permissionList = append(permissionList, "READ")
+			permissionList = append(permissionList, GrantPermRead)
 		}
 		if opfsacl&AclDirWrite == AclDirWrite {
-			permissionList = append(permissionList, "WRITE")
+			permissionList = append(permissionList, GrantPermWrite)
 		}
 	} else {
 		if opfsacl&AclFileFullControl == AclFileFullControl {
-			permissionList = append(permissionList, "FULL_CONTROL")
+			permissionList = append(permissionList, GrantPermFullControl)
 			return permissionList
 		}
 		if opfsacl&AclFileRead == AclFileRead {
-			permissionList = append(permissionList, "READ")
+			permissionList = append(permissionList, GrantPermRead)
 		}
 		if opfsacl&AclFileWrite == AclFileWrite {
-			permissionList = append(permissionList, "WRITE")
+			permissionList = append(permissionList, GrantPermWrite)
 		}
 	}
 	if opfsacl&AclRead == AclRead {
-		permissionList = append(permissionList, "READ_ACP")
+		permissionList = append(permissionList, GrantPermReadAcp)
 	}
 	if opfsacl&AclWrite == AclWrite {
-		permissionList = append(permissionList, "WRITE_ACP")
+		permissionList = append(permissionList, GrantPermWriteAcp)
 	}
 
 	return permissionList

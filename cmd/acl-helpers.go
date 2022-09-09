@@ -285,3 +285,13 @@ func getACLFromRequest(ctx context.Context, r *http.Request) ([]grant, error) {
 
 	return acl, nil
 }
+func getDefaultAcl() []grant {
+	return []grant {
+		grant {
+			Grantee: grantee{
+				XMLXSI: OwnerType,
+			},
+			Permission: GrantPermFullControl,
+		},
+	}
+}

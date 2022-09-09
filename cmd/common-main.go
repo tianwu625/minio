@@ -200,6 +200,9 @@ func minioConfigToConsoleFeatures() {
 	if globalLDAPConfig.Enabled {
 		os.Setenv("CONSOLE_LDAP_ENABLED", config.EnableOn)
 	}
+	if globalGatewayName == OPFSBackendGateway {
+		os.Setenv("CONSOLE_LDAP_ENABLED", config.EnableOn)
+	}
 	// if IDP is enabled, set IDP environment variables
 	if globalOpenIDConfig.ProviderCfgs[config.Default] != nil {
 		os.Setenv("CONSOLE_IDP_URL", globalOpenIDConfig.ProviderCfgs[config.Default].URL.String())

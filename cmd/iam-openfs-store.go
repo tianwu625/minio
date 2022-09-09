@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+	"strconv"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/minio/minio/internal/auth"
@@ -224,6 +225,7 @@ func (iamOpfs *IAMOpfsStore) deleteIAMConfig(ctx context.Context, path string) e
 func (iamOpfs *IAMOpfsStore) loadPolicyDoc(ctx context.Context, policy string, m map[string]PolicyDoc) error {
 	data, objInfo, err := iamOpfs.loadIAMConfigBytesWithMetadata(ctx, getPolicyDocPath(policy))
 	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("policy %v", policy))
 		if err == errConfigNotFound {
 			return errNoSuchPolicy
 		}
@@ -233,6 +235,7 @@ func (iamOpfs *IAMOpfsStore) loadPolicyDoc(ctx context.Context, policy string, m
 	var p PolicyDoc
 	err = p.parseJSON(data)
 	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("err %v", err))
 		return err
 	}
 
@@ -267,6 +270,7 @@ func (iamOpfs *IAMOpfsStore) loadUser(ctx context.Context, user string, userType
 		configPath := OpfsConfigDir + OpfsAuthFile
 		ids, err := loadOPFSConfig(ctx, configPath)
 		if err != nil {
+			logger.LogIf(ctx, fmt.Errorf("err %v", err))
 			return err
 		}
 		found := false
@@ -275,10 +279,12 @@ func (iamOpfs *IAMOpfsStore) loadUser(ctx context.Context, user string, userType
 				found = true
 				cred, err := createUserIdentityfromOPFS(uid)
 				if err != nil {
+					logger.LogIf(ctx, fmt.Errorf("err %v", err))
 					return err
 				}
 				mu, err := iamOpfs.loadUserCanonicalID(ctx, user, userType)
 				if err != nil {
+					logger.LogIf(ctx, fmt.Errorf("err %v", err))
 					return err
 				}
 				cred.Claims["usercanionialid"] = mu.UserCanonialID
@@ -287,6 +293,7 @@ func (iamOpfs *IAMOpfsStore) loadUser(ctx context.Context, user string, userType
 			}
 		}
 		if !found {
+			logger.LogIf(ctx, fmt.Errorf("err %v", err))
 			return errNoSuchUser
 		}
 		return nil
@@ -294,6 +301,7 @@ func (iamOpfs *IAMOpfsStore) loadUser(ctx context.Context, user string, userType
 	var u UserIdentity
 	err := iamOpfs.loadIAMConfig(ctx, &u, getUserIdentityPath(user, userType))
 	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("err %v", err))
 		if err == errConfigNotFound {
 			return errNoSuchUser
 		}
@@ -330,16 +338,19 @@ func (iamOpfs *IAMOpfsStore) loadUsers(ctx context.Context, userType IAMUserType
 	if userType == regUser {
 		ids, err := loadOPFSConfig(ctx, configPath)
 		if err != nil {
+			logger.LogIf(ctx, fmt.Errorf("err %v", err))
 			return err
 		}
 
 		for _, uid := range ids.IdUsers {
 			cred, err := createUserIdentityfromOPFS(uid)
 			if err != nil {
+				logger.LogIf(ctx, fmt.Errorf("err %v", err))
 				return err
 			}
 			mu, err := iamOpfs.loadUserCanonicalID(ctx, uid.AccessKey, userType)
 			if err != nil {
+				logger.LogIf(ctx, fmt.Errorf("err %v", err))
 				return err
 			}
 			cred.Claims["usercanionialid"] = mu.UserCanonialID
@@ -350,11 +361,13 @@ func (iamOpfs *IAMOpfsStore) loadUsers(ctx context.Context, userType IAMUserType
 
 	for item := range listIAMConfigItems(ctx, iamOpfs.objAPI, basePrefix) {
 		if item.Err != nil {
+			logger.LogIf(ctx, fmt.Errorf("err %v", item.Err))
 			return item.Err
 		}
 
 		userName := path.Dir(item.Item)
 		if err := iamOpfs.loadUser(ctx, userName, userType, m); err != nil && err != errNoSuchUser {
+			logger.LogIf(ctx, fmt.Errorf("err %v", err))
 			return err
 		}
 	}
@@ -363,13 +376,27 @@ func (iamOpfs *IAMOpfsStore) loadUsers(ctx context.Context, userType IAMUserType
 }
 
 func (iamOpfs *IAMOpfsStore) loadGroup(ctx context.Context, group string, m map[string]GroupInfo) error {
-	return nil
+	configPath := OpfsConfigDir + OpfsAuthFile
+	ids, err := loadOPFSConfig(ctx, configPath)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("err %v", err))
+		return err
+	}
+	for _, gid := range ids.IdGroups {
+		if gid.Name == group {
+			ginfo := createGroupInfoOPFS(gid, ids)
+			m[gid.Name] = *ginfo
+			return nil
+		}
+	}
+	return errNoSuchGroup
 }
 
 func (iamOpfs *IAMOpfsStore) loadGroups(ctx context.Context, m map[string]GroupInfo) error {
 	configPath := OpfsConfigDir + OpfsAuthFile
 	ids, err := loadOPFSConfig(ctx, configPath)
 	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("err %v", err))
 		return err
 	}
 	for _, gid := range ids.IdGroups {
@@ -431,6 +458,7 @@ func (iamOpfs *IAMOpfsStore) saveMappedPolicy(ctx context.Context, name string, 
 
 func (iamOpfs *IAMOpfsStore) saveUserIdentity(ctx context.Context, name string, userType IAMUserType, u UserIdentity, opts ...options) error {
 	if userType == regUser {
+		logger.LogIf(ctx, fmt.Errorf("name %v", name))
 		return NotImplemented{}
 	}
 
@@ -438,6 +466,7 @@ func (iamOpfs *IAMOpfsStore) saveUserIdentity(ctx context.Context, name string, 
 }
 
 func (iamOpfs *IAMOpfsStore) saveGroupInfo(ctx context.Context, name string, gi GroupInfo) error {
+	logger.LogIf(ctx, fmt.Errorf("group %v", name))
 	return NotImplemented{}
 }
 
@@ -459,6 +488,7 @@ func (iamOpfs *IAMOpfsStore) deleteMappedPolicy(ctx context.Context, name string
 
 func (iamOpfs *IAMOpfsStore) deleteUserIdentity(ctx context.Context, name string, userType IAMUserType) error {
 	if userType == regUser {
+		logger.LogIf(ctx, fmt.Errorf("name %v", name))
 		return NotImplemented{}
 	}
 	err := iamOpfs.deleteIAMConfig(ctx, getUserIdentityPath(name, userType))
@@ -469,6 +499,7 @@ func (iamOpfs *IAMOpfsStore) deleteUserIdentity(ctx context.Context, name string
 }
 
 func (iamOpfs *IAMOpfsStore) deleteGroupInfo(ctx context.Context, name string) error {
+	logger.LogIf(ctx, fmt.Errorf("group %v", name))
 	return NotImplemented{}
 }
 
@@ -608,4 +639,39 @@ func (iamOpfs *IAMOpfsStore) GetUserCanionialID(cred *auth.Credentials) (string,
 	}
 
 	return usercanionialid, nil
+}
+
+func createOPFSServiceAccount(accessKey, secretKey, parentUser string) (*auth.Credentials, error) {
+	cred, err := auth.CreateCredentials(accessKey, secretKey)
+	if err != nil {
+		return nil, err
+	}
+	cred.ParentUser = parentUser
+
+	return &cred, nil
+}
+
+const (
+	defaultOPFSDuration = time.Hour * 1
+	minOPFSExpiry time.Duration = 15 * time.Minute
+	maxOPFSExpiry time.Duration = 365 * 24 * time.Hour
+)
+
+func (iamOpfs *IAMOpfsStore) GetExpiryDuration(dsecs string) (time.Duration, error) {
+	logger.Info("in get duration")
+	if dsecs == "" {
+		return defaultOPFSDuration, nil
+	}
+
+	d, err := strconv.Atoi(dsecs)
+	if err != nil {
+		return 0, auth.ErrInvalidDuration
+	}
+
+	dur := time.Duration(d) * time.Second
+
+	if dur < minOPFSExpiry || dur > maxOPFSExpiry {
+		return 0, auth.ErrInvalidDuration
+	}
+	return dur, nil
 }

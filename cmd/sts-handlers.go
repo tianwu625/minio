@@ -183,6 +183,7 @@ func parseForm(r *http.Request) error {
 func (sts *stsAPIHandlers) AssumeRole(w http.ResponseWriter, r *http.Request) {
 	ctx := newContext(r, w, "AssumeRole")
 
+	logger.LogIf(ctx, fmt.Errorf(""))
 	// Check auth here (otherwise r.Form will have unexpected values from
 	// the call to `parseForm` below), but return failure only after we are
 	// able to validate that it is a valid STS request, so that we are able
@@ -536,6 +537,7 @@ func (sts *stsAPIHandlers) AssumeRoleWithClientGrants(w http.ResponseWriter, r *
 func (sts *stsAPIHandlers) AssumeRoleWithLDAPIdentity(w http.ResponseWriter, r *http.Request) {
 	ctx := newContext(r, w, "AssumeRoleWithLDAPIdentity")
 
+	logger.LogIf(ctx, fmt.Errorf(""))
 	defer logger.AuditLog(ctx, w, r, nil, stsLDAPPassword)
 
 	// Parse the incoming form data.
@@ -589,6 +591,8 @@ func (sts *stsAPIHandlers) AssumeRoleWithLDAPIdentity(w http.ResponseWriter, r *
 		}
 	}
 
+	logger.LogIf(ctx, fmt.Errorf("username %v passwd %v", ldapUsername, ldapPassword))
+	/*
 	ldapUserDN, groupDistNames, err := globalLDAPConfig.Bind(ldapUsername, ldapPassword)
 	if err != nil {
 		err = fmt.Errorf("LDAP server error: %w", err)
@@ -610,11 +614,25 @@ func (sts *stsAPIHandlers) AssumeRoleWithLDAPIdentity(w http.ResponseWriter, r *
 		writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue, err)
 		return
 	}
+	*/
+	ldapUserDN := ldapUsername
+	groupDistNames, err:= globalIAMSys.GetGroupsByName(ldapUsername)
+	if err != nil {
+		writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue, err)
+		return
+	}
+
+	expiryDur, err := globalIAMSys.GetExpiryDuration(r.Form.Get(stsDurationSeconds))
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("get duration err %v", err))
+		writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue, err)
+		return
+	}
 
 	m := map[string]interface{}{
-		expClaim:  UTCNow().Add(expiryDur).Unix(),
-		ldapUser:  ldapUserDN,
-		ldapUserN: ldapUsername,
+               expClaim:  UTCNow().Add(expiryDur).Unix(),
+               ldapUser:  ldapUserDN,
+               ldapUserN: ldapUsername,
 	}
 
 	if len(sessionPolicyStr) > 0 {

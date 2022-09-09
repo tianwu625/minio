@@ -271,6 +271,13 @@ func (ofs *OPFSObjects) MakeBucketWithLocation(ctx context.Context, bucket strin
 			logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
 			return err
 		}
+	} else {
+	//set default acl for bucket
+		grants := getDefaultAcl()
+		if err := ofs.SetAcl(ctx, bucket, "", grants); err != nil {
+			logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
+			return err
+		}
 	}
 
 	meta := newBucketMetadata(bucket)
@@ -883,6 +890,12 @@ func (ofs *OPFSObjects) putObject(ctx context.Context, bucket string, object str
 				logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
 				return ObjectInfo{}, toObjectErr(err, bucket, object)
 			}
+		} else {
+			grants := getDefaultAcl()
+			if err := ofs.SetAcl(ctx, bucket, object, grants); err != nil {
+				logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
+				return ObjectInfo{}, toObjectErr(err, bucket, object)
+			}
 		}
 		var fi os.FileInfo
 		if fi, err = opfsStatDir(ctx, pathJoin(ofs.fsPath, bucket, object)); err != nil {
@@ -960,6 +973,12 @@ func (ofs *OPFSObjects) putObject(ctx context.Context, bucket string, object str
 	if opts.HaveAcl() {
 		if err := ofs.SetAcl(ctx, bucket, object, opts.AclGrant); err != nil {
 			logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
+			return ObjectInfo{}, toObjectErr(err, bucket, object)
+		}
+	} else {
+		grants := getDefaultAcl()
+		if err := ofs.SetAcl(ctx, bucket, object, grants); err != nil {
+			logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
 			return ObjectInfo{}, toObjectErr(err, bucket, object)
 		}
 	}
@@ -1440,12 +1459,39 @@ func (ofs *OPFSObjects) GetAcl(ctx context.Context, bucket, object string) ([]gr
 	isdir := info.Mode().IsDir()
 	opfsgrants, err := opfsGetAclWithCred(ctx, path)
 	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("ofapi get failed %v", err))
 		return nil, err
+	}
+	if len(opfsgrants) == 0 {
+		grantsSum := make([]grant, 0, 1)
+		uid, _, err := opfsGetUidGid(path)
+		if err != nil {
+			return grantsSum, err
+		}
+		cid, err := globalIAMSys.GetCanionialIdByUid(uid)
+		if err != nil {
+			if uid != 0 {
+				return grantsSum, err
+			}
+			cid = globalMinioDefaultOwnerID
+		}
+		var g grant
+		g.Grantee.XMLNS = AWSNS
+		g.Grantee.XMLXSI = UserType
+		g.Grantee.Type = UserType
+		g.Grantee.ID = cid
+		g.Permission = GrantPermFullControl
+		grantsSum = append(grantsSum, g)
+		return grantsSum, nil
 	}
 	grantsSum := make([]grant, 0, len(opfsgrants))
 	for _, og := range opfsgrants {
 		grants := make([]grant, 0, permissionMaxLen)
 		permissionList := opfsmaps3List(og.aclbits, isdir)
+		if len(permissionList) == 0 {
+			logger.Info("aclbits=%v", og.aclbits)
+			continue
+		}
 		for _, p := range permissionList {
 			var g grant
 			g.Permission = p
@@ -1456,7 +1502,8 @@ func (ofs *OPFSObjects) GetAcl(ctx context.Context, bucket, object string) ([]gr
 				cid, err := globalIAMSys.GetCanionialIdByUid(og.uid)
 				if err != nil {
 					if og.uid != 0 {
-						return grants, err
+						logger.LogIf(ctx, fmt.Errorf("get cid failed %v, %d", err, og.uid))
+						return grantsSum, err
 					}
 					cid = globalMinioDefaultOwnerID
 				}
@@ -1467,7 +1514,8 @@ func (ofs *OPFSObjects) GetAcl(ctx context.Context, bucket, object string) ([]gr
 			case GroupType:
 				gname, err := globalIAMSys.GetGroupNameByGid(og.gid)
 				if err != nil {
-					return grants, err
+					logger.LogIf(ctx, fmt.Errorf("get gname failed %v", err))
+					return grantsSum, err
 				}
 				g.Grantee.XMLNS = AWSNS
 				g.Grantee.XMLXSI = GroupType
@@ -1479,7 +1527,8 @@ func (ofs *OPFSObjects) GetAcl(ctx context.Context, bucket, object string) ([]gr
 				g.Grantee.Type = GroupType
 				g.Grantee.URI = httpSchemWithSlash + AWSCom + "/" + AWSGroup + "/" + AWSGlobal + "/" + AWSAllUser
 			default:
-				return grants, NotImplemented{}
+				logger.LogIf(ctx, fmt.Errorf("unkown type %v", og.acltype))
+				return grantsSum, NotImplemented{}
 			}
 			grants = append(grants, g)
 		}

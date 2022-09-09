@@ -223,3 +223,7 @@ require (
 	gopkg.in/square/go-jose.v2 v2.5.1 // indirect
 	maze.io/x/duration v0.0.0-20160924141736-faac084b6075 // indirect
 )
+
+replace github.com/minio/console => ../console
+replace github.com/minio/madmin-go => ../madmin-go
+replace github.com/minio/minio-go/v7 => ../minio-go

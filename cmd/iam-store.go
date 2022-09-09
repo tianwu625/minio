@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/dustin/go-humanize"
 	jsoniter "github.com/json-iterator/go"
@@ -792,12 +793,14 @@ func (store *IAMStoreSys) GetGroupDescription(group string) (gd madmin.GroupDesc
 
 	ps, updatedAt, err := cache.policyDBGet(store.getUsersSysType(), group, true)
 	if err != nil {
+		logger.LogIf(nil, fmt.Errorf("err %v", err))
 		return gd, err
 	}
 
 	policy := strings.Join(ps, ",")
 
-	if store.getUsersSysType() != MinIOUsersSysType {
+	if store.getUsersSysType() != MinIOUsersSysType &&
+	   store.getUsersSysType() != OPFSUsersSysType {
 		return madmin.GroupDesc{
 			Name:      group,
 			Policy:    policy,
@@ -1325,6 +1328,44 @@ func (store *IAMStoreSys) GetUserInfo(name string) (u madmin.UserInfo, err error
 	}, nil
 }
 
+//GetUserDetail - get detail info on a user
+
+func (store *IAMStoreSys) GetUserDetail(name string) (u madmin.UserDetail, err error) {
+	if name == "" {
+		return u, errInvalidArgument
+	}
+
+	cache := store.rlock()
+	defer store.runlock()
+
+	cred, found := cache.iamUsersMap[name]
+	if !found {
+		return u, errNoSuchUser
+	}
+
+	if cred.IsTemp() || cred.IsServiceAccount() {
+		return u, errIAMActionNotAllowed
+	}
+
+	if !cred.IsOPFSAccount() {
+		return u, NotImplemented{}
+	}
+	sgids := cred.Claims[GroupIDs].([]int)
+	sgids32 := *(*[]int32)(unsafe.Pointer(&sgids))
+
+	return madmin.UserDetail{
+		CanonicalID:cred.Claims["usercanionialid"].(string),
+		Pgid:int32(cred.Claims[GroupID].(int)),
+		Sgids:sgids32,
+		Status: func() madmin.AccountStatus {
+			if cred.IsValid() {
+				return madmin.AccountEnabled
+			}
+			return madmin.AccountDisabled
+		}(),
+		Uid:int32(cred.Claims[UserID].(int)),
+	}, nil
+}
 // PolicyMappingNotificationHandler - handles updating a policy mapping from storage.
 func (store *IAMStoreSys) PolicyMappingNotificationHandler(ctx context.Context, userOrGroup string, isGroup bool, userType IAMUserType) error {
 	if userOrGroup == "" {
@@ -1491,6 +1532,7 @@ func (store *IAMStoreSys) DeleteUser(ctx context.Context, accessKey string, user
 // credential.
 func (store *IAMStoreSys) SetTempUser(ctx context.Context, accessKey string, cred auth.Credentials, policyName string) error {
 	if accessKey == "" || !cred.IsTemp() || cred.IsExpired() || cred.ParentUser == "" {
+		logger.LogIf(ctx, fmt.Errorf("%v, %v, %v, %v", accessKey, cred.IsTemp(), cred.IsExpired(), cred.ParentUser))
 		return errInvalidArgument
 	}
 
@@ -1998,6 +2040,10 @@ func (store *IAMStoreSys) LoadUser(ctx context.Context, accessKey string) {
 }
 
 func (store *IAMStoreSys) GetUserIdByCanionialID(userid string) (int, error) {
+	if userid == globalMinioDefaultOwnerID {
+		return 0, nil
+	}
+
 	gider, ok := store.IAMStorageAPI.(GetUserCanionialIDer)
 	if !ok {
 		return 0, NotImplemented{}
@@ -2009,7 +2055,7 @@ func (store *IAMStoreSys) GetUserIdByCanionialID(userid string) (int, error) {
 	for _, cred := range cache.iamUsersMap {
 		uid, err := gider.GetUserCanionialID(&cred)
 		if err != nil {
-			return 0, err
+			continue
 		}
 		if uid == userid {
 			found = true
@@ -2047,11 +2093,11 @@ func (store *IAMStoreSys) GetCanionialIdByUid(uid int) (string, error) {
 	defer store.unlock()
 	for _, ucred := range cache.iamUsersMap {
 		if !ucred.IsOPFSAccount() {
-			return "", NotImplemented{}
+			continue
 		}
 		id, ok := ucred.Claims["userid"].(int)
 		if !ok {
-			return "", NotImplemented{}
+			continue
 		}
 		if id == uid {
 			gider, ok := store.IAMStorageAPI.(GetUserCanionialIDer)
@@ -2075,7 +2121,7 @@ func (store *IAMStoreSys) GetGroupNameByGid(gid int) (string, error) {
 	for gname, gi := range cache.iamGroupsMap {
 		id, ok := gi.Attr.(int)
 		if !ok {
-			return "", NotImplemented{}
+			continue
 		}
 		if id == gid {
 			return gname, nil
@@ -2083,4 +2129,68 @@ func (store *IAMStoreSys) GetGroupNameByGid(gid int) (string, error) {
 	}
 
 	return "", errNoSuchGroup
+}
+
+func (store *IAMStoreSys) GetGroupsByName(name string) ([]string, error) {
+	groups := make([]string, 0)
+	if name == globalActiveCred.AccessKey {
+		groups = append(groups, "root")
+		return groups, nil
+	}
+	ucred, ok := store.GetUser(name)
+	if !ok {
+		return groups, errNoSuchGroup
+	}
+
+	if !ucred.IsOPFSAccount() {
+		return groups, NotImplemented{}
+	}
+
+	gids := make([]int, 0)
+	pgid, ok := ucred.Claims[GroupID].(int)
+	if !ok {
+		logger.LogIf(nil, fmt.Errorf("get pgroup id failed, username=%v", name))
+		return groups, NotImplemented{}
+	}
+	gids = append(gids, pgid)
+
+	sgids, ok := ucred.Claims[GroupIDs].([]int)
+	if !ok {
+		logger.LogIf(nil, fmt.Errorf("get sgroup ids failed, username=%v", name))
+		return groups, NotImplemented{}
+	}
+
+	gids = append(gids, sgids...)
+
+	cache := store.lock()
+	defer store.unlock()
+
+	for _, expid := range gids {
+		found := false
+		for gname, gi := range cache.iamGroupsMap {
+			id, ok := gi.Attr.(int)
+			if !ok {
+				return groups, NotImplemented{}
+			}
+			if id == expid {
+				groups = append(groups, gname)
+				found = true
+			}
+		}
+		if !found {
+			logger.LogIf(nil, fmt.Errorf("not found gid %v mapped to gname, name=%v", expid, name))
+			return groups, NotImplemented{}
+		}
+	}
+
+	return groups, nil
+}
+
+func (store *IAMStoreSys) GetExpiryDuration(dsecs string) (time.Duration, error) {
+	expgeter, ok := store.IAMStorageAPI.(GetExpiryDurationer)
+	if !ok {
+		logger.LogIf(nil, fmt.Errorf("not implemented"))
+		return 0, NotImplemented{}
+	}
+	return expgeter.GetExpiryDuration(dsecs)
 }

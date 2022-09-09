@@ -214,6 +214,62 @@ func (a adminAPIHandlers) GetUserInfo(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponseJSON(w, data)
 }
 
+func (a adminAPIHandlers) GetUserDetail(w http.ResponseWriter, r *http.Request) {
+	ctx := newContext(r, w, "GetUserDetail")
+
+	defer logger.AuditLog(ctx, w, r, mustGetClaimsFromToken(r))
+
+	vars := mux.Vars(r)
+	name := vars["accessKey"]
+
+	// Get current object layer instance.
+	objectAPI := newObjectLayerFn()
+	if objectAPI == nil || globalNotificationSys == nil {
+		writeErrorResponseJSON(ctx, w, errorCodes.ToAPIErr(ErrServerNotInitialized), r.URL)
+		return
+	}
+
+	cred, claims, owner, s3Err := validateAdminSignature(ctx, r, "")
+	if s3Err != ErrNone {
+		writeErrorResponseJSON(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL)
+		return
+	}
+
+	checkDenyOnly := false
+	if name == cred.AccessKey {
+		// Check that there is no explicit deny - otherwise it's allowed
+		// to view one's own info.
+		checkDenyOnly = true
+	}
+
+	if !globalIAMSys.IsAllowed(iampolicy.Args{
+		AccountName:     cred.AccessKey,
+		Groups:          cred.Groups,
+		Action:          iampolicy.GetUserAdminAction,
+		ConditionValues: getConditionValues(r, "", cred.AccessKey, claims),
+		IsOwner:         owner,
+		Claims:          claims,
+		DenyOnly:        checkDenyOnly,
+	}) {
+		writeErrorResponseJSON(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
+		return
+	}
+
+	userDetail, err := globalIAMSys.GetUserDetail(ctx, name)
+	if err != nil {
+		writeErrorResponseJSON(ctx, w, toAdminAPIErr(ctx, err), r.URL)
+		return
+	}
+
+	data, err := json.Marshal(userDetail)
+	if err != nil {
+		writeErrorResponseJSON(ctx, w, toAdminAPIErr(ctx, err), r.URL)
+		return
+	}
+
+	writeSuccessResponseJSON(w, data)
+}
+
 // UpdateGroupMembers - PUT /minio/admin/v3/update-group-members
 func (a adminAPIHandlers) UpdateGroupMembers(w http.ResponseWriter, r *http.Request) {
 	ctx := newContext(r, w, "UpdateGroupMembers")

@@ -158,6 +158,8 @@ func registerAdminRouter(router *mux.Router, enableConfigOps bool) {
 
 		// User info
 		adminRouter.Methods(http.MethodGet).Path(adminVersion+"/user-info").HandlerFunc(gz(httpTraceHdrs(adminAPI.GetUserInfo))).Queries("accessKey", "{accessKey:.*}")
+		// User detail info
+		adminRouter.Methods(http.MethodGet).Path(adminVersion+"/user-detail").HandlerFunc(gz(httpTraceHdrs(adminAPI.GetUserDetail))).Queries("accessKey", "{accessKey:.*}")
 		// Add/Remove members from group
 		adminRouter.Methods(http.MethodPut).Path(adminVersion + "/update-group-members").HandlerFunc(gz(httpTraceHdrs(adminAPI.UpdateGroupMembers)))
 

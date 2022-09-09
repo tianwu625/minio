@@ -838,6 +838,21 @@ func (sys *IAMSys) GetUserInfo(ctx context.Context, name string) (u madmin.UserI
 	return sys.store.GetUserInfo(name)
 }
 
+// GetUserDetail - get info on a user.
+func (sys *IAMSys) GetUserDetail(ctx context.Context, name string) (u madmin.UserDetail, err error) {
+	if !sys.Initialized() {
+		return u, errServerNotInitialized
+	}
+
+	select {
+	case <-sys.configLoaded:
+	default:
+		sys.store.LoadUser(ctx, name)
+	}
+
+	return sys.store.GetUserDetail(name)
+}
+
 // SetUserStatus - sets current user status, supports disabled or enabled.
 func (sys *IAMSys) SetUserStatus(ctx context.Context, accessKey string, status madmin.AccountStatus) error {
 	if !sys.Initialized() {
@@ -943,6 +958,7 @@ func (sys *IAMSys) NewServiceAccount(ctx context.Context, parentUser string, gro
 	cred.ParentUser = parentUser
 	cred.Groups = groups
 	cred.Status = string(auth.AccountOn)
+	logger.Info("cred time %v", cred.Expiration.String())
 
 	err = sys.store.AddServiceAccount(ctx, cred)
 	if err != nil {
@@ -1766,6 +1782,14 @@ func (sys *IAMSys) GetCanionialIdByUid(uid int) (string, error) {
 
 func (sys *IAMSys) GetGroupNameByGid(gid int) (string, error) {
 	return sys.store.GetGroupNameByGid(gid)
+}
+
+func (sys *IAMSys) GetGroupsByName(name string) ([]string, error) {
+	return sys.store.GetGroupsByName(name)
+}
+
+func (sys *IAMSys) GetExpiryDuration(dsecs string) (time.Duration, error) {
+	return sys.store.GetExpiryDuration(dsecs)
 }
 
 // NewIAMSys - creates new config system object.

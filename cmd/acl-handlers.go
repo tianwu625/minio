@@ -319,7 +319,17 @@ func (api objectAPIHandlers) GetBucketACLHandler(w http.ResponseWriter, r *http.
 		var grants []grant
 		grants, err := aclAPI.GetAcl(ctx, bucket, "")
 		if err != nil {
+			logger.LogIf(ctx, fmt.Errorf("get acl failed err %v", err))
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+			return
+		}
+		acle.XMLName = xml.Name {
+			Space: "xmlns",
+			Local: "http://s3.amazonaws.com/doc/2006-03-01/",
+		}
+		acle.Owner = Owner{
+			ID:          globalMinioDefaultOwnerID,
+			DisplayName: "minio",
 		}
 		acle.AccessControlList.Grants = grantsToEncode(grants)
 	}
@@ -416,7 +426,9 @@ func (api objectAPIHandlers) PutObjectACLHandler(w http.ResponseWriter, r *http.
 		}
 
 		if err := aclAPI.SetAcl(ctx, bucket, object, acl.AccessControlList.Grants); err != nil {
+			logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+			return
 		}
 	}
 
@@ -497,6 +509,14 @@ func (api objectAPIHandlers) GetObjectACLHandler(w http.ResponseWriter, r *http.
 		grants, err := aclAPI.GetAcl(ctx, bucket, object)
 		if err != nil {
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+		}
+		acle.XMLName = xml.Name {
+			Space: "xmlns",
+			Local: "http://s3.amazonaws.com/doc/2006-03-01/",
+		}
+		acle.Owner = Owner{
+			ID:          globalMinioDefaultOwnerID,
+			DisplayName: "minio",
 		}
 		acle.AccessControlList.Grants = grantsToEncode(grants)
 	}
