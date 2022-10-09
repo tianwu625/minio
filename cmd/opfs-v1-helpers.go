@@ -554,6 +554,14 @@ func opfsRenameFile(ctx context.Context, sourcePath, destPath string) error {
 	return nil
 }
 
+func opfsRenameFileWithCred(ctx context.Context, sourcePath, destPath string) error {
+	if err := setUserCred(ctx); err != nil {
+		logger.LogIf(ctx, fmt.Errorf("set user cred failed %v", err))
+		return err
+	}
+	return opfsRenameFile(ctx, sourcePath, destPath)
+}
+
 type opfsFile struct {
 	fd     *C.ofapi_fd_t
 	offset int64
@@ -1279,6 +1287,7 @@ type opfsAcl struct {
 	gid     int
 	acltype string
 	aclbits int
+	aclflag int
 }
 
 const (
@@ -1300,10 +1309,14 @@ const (
 	AclFileFullControl = AclFileRead | AclFileWrite | AclWrite | AclRead |
 		int(C.OFAPI_ACE_MASK_CHANGE_OWNER|C.OFAPI_ACE_MASK_SYNC|
 			C.OFAPI_ACE_MASK_EXECUTE)
+	AclFlagDefault = int(C.OFAPI_ACE_FLAG_NO_PROPAGET)
+	AclFlagInherit = int(C.OFAPI_ACE_FLAG_FILE_INHERIT |
+		C.OFAPI_ACE_FLAG_DIR_INHERIT)
 )
 
-func s3mapopfs(perm string, isDir bool) int {
-	var aclbits int
+func s3mapopfs(perm string, isDir bool) (int, int) {
+	var aclbits, aclflag int
+	aclflag = AclFlagDefault
 	switch perm {
 	case GrantPermRead:
 		if isDir {
@@ -1314,6 +1327,7 @@ func s3mapopfs(perm string, isDir bool) int {
 	case GrantPermWrite:
 		if isDir {
 			aclbits = AclDirWrite
+			aclflag = AclFlagInherit
 		} else {
 			aclbits = AclFileWrite
 		}
@@ -1330,7 +1344,7 @@ func s3mapopfs(perm string, isDir bool) int {
 	default:
 	}
 
-	return aclbits
+	return aclbits, aclflag
 }
 
 func opfsmaps3List(opfsacl int, isDir bool) []string {
@@ -1354,9 +1368,8 @@ func opfsmaps3List(opfsacl int, isDir bool) []string {
 		if opfsacl&AclFileRead == AclFileRead {
 			permissionList = append(permissionList, GrantPermRead)
 		}
-		if opfsacl&AclFileWrite == AclFileWrite {
-			permissionList = append(permissionList, GrantPermWrite)
-		}
+		// object no write permission, have write permission only from parent dir inherit
+		// so opfs minio not show this permission to get Acl
 	}
 	if opfsacl&AclRead == AclRead {
 		permissionList = append(permissionList, GrantPermReadAcp)
@@ -1376,7 +1389,6 @@ func opfsSetAclWithCred(ctx context.Context, path string, grants []opfsAcl) erro
 	for _, og := range grants {
 		var a C.struct_oace
 		a.oe_type = C.OFAPI_ACE_TYPE_ALLOWED
-		a.oe_flag = C.OFAPI_ACE_FLAG_NO_PROPAGET
 		switch og.acltype {
 		case UserType:
 			a.oe_credtype = C.OFAPI_ACE_CRED_UID
@@ -1393,6 +1405,7 @@ func opfsSetAclWithCred(ctx context.Context, path string, grants []opfsAcl) erro
 			return NotImplemented{}
 		}
 		a.oe_mask = C.uint32_t(og.aclbits)
+		a.oe_flag = C.uint32_t(og.aclflag)
 		oa = append(oa, a)
 	}
 	var aid C.uint64_t
@@ -1427,20 +1440,17 @@ func toCPoint(as []C.struct_oace) *C.struct_oace {
 	return (*C.struct_oace)(unsafe.Pointer(uintptr(asHdr.Data)))
 }
 
-func opfsGetAclWithCred(ctx context.Context, path string) ([]opfsAcl, error) {
-	if err := setUserCred(ctx); err != nil {
-		return nil, err
-	}
+func opfsGetAcl(path string) ([]opfsAcl, error) {
 	fd, nerr := opfsCopen(path)
 	if nerr != nil {
-		return nil, nerr
+		return []opfsAcl{}, nerr
 	}
 
 	var oace *C.struct_oace
 	var acecnt C.uint32_t
 	err := C.ofapi_aclqry(fd, &oace, &acecnt)
 	if err != C.int(0) {
-		return nil, errAclgetFailed
+		return []opfsAcl{}, errAclgetFailed
 	}
 
 	oa := oace.toSlice(int(acecnt))
@@ -1448,10 +1458,6 @@ func opfsGetAclWithCred(ctx context.Context, path string) ([]opfsAcl, error) {
 	opfsgrants := make([]opfsAcl, 0, int(acecnt))
 	for i := 0; i < int(acecnt); i++ {
 		if oa[i].oe_type == C.OFAPI_ACE_TYPE_DENIED {
-			continue
-		}
-		if oa[i].oe_flag&C.OFAPI_ACE_FLAG_NO_PROPAGET == C.uint32_t(0) &&
-			oa[i].oe_flag != C.uint32_t(0) {
 			continue
 		}
 		var og opfsAcl
@@ -1474,13 +1480,27 @@ func opfsGetAclWithCred(ctx context.Context, path string) ([]opfsAcl, error) {
 			continue
 		}
 		og.aclbits = int(oa[i].oe_mask)
+		og.aclflag = int(oa[i].oe_flag)
 		opfsgrants = append(opfsgrants, og)
 	}
-
 	return opfsgrants, nil
 }
 
+func opfsGetAclWithCred(ctx context.Context, path string) ([]opfsAcl, error) {
+	if err := setUserCred(ctx); err != nil {
+		return nil, err
+	}
+	opfsgrants, err := opfsGetAcl(path)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("get acl from path %v failed %v", path, err))
+		return opfsgrants, err
+	}
+
+	return opfsgrants, err
+}
+
 func opfsGetUidGid(path string) (int, int, error) {
+	setOpfsSessionRoot()
 	fd, err := opfsCopen(path)
 	if err != nil {
 		return 0, 0, err
@@ -1494,4 +1514,22 @@ func opfsGetUidGid(path string) (int, int, error) {
 	}
 
 	return int(oatt.oa_uid), int(oatt.oa_gid), nil
+}
+
+func opfsGetInheritAclFromBucket(path string) ([]opfsAcl, error) {
+	setOpfsSessionRoot()
+	opfsgrants, err := opfsGetAcl(path)
+	if err != nil {
+		logger.LogIf(nil, fmt.Errorf("get acl from path %v failed %v", path, err))
+		return opfsgrants, err
+	}
+	inheritGrants := make([]opfsAcl, 0, len(opfsgrants))
+	for _, g := range opfsgrants {
+		if g.aclflag == AclFlagInherit &&
+			g.aclbits&AclDirWrite == AclDirWrite {
+			inheritGrants = append(inheritGrants, g)
+		}
+	}
+
+	return inheritGrants, nil
 }

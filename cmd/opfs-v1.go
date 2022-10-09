@@ -265,14 +265,14 @@ func (ofs *OPFSObjects) MakeBucketWithLocation(ctx context.Context, bucket strin
 		return toObjectErr(err, bucket)
 	}
 	//do acl here
-	//mini windows of create and set acl 
+	//mini windows of create and set acl
 	if opts.HaveAcl() {
 		if err := ofs.SetAcl(ctx, bucket, "", opts.AclGrant); err != nil {
 			logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
 			return err
 		}
 	} else {
-	//set default acl for bucket
+		//set default acl for bucket
 		grants := getDefaultAcl()
 		if err := ofs.SetAcl(ctx, bucket, "", grants); err != nil {
 			logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
@@ -886,12 +886,23 @@ func (ofs *OPFSObjects) putObject(ctx context.Context, bucket string, object str
 		}
 		//set acl for prefix object
 		if opts.HaveAcl() {
+			grants, err := ofs.getInheritAcl(ctx, bucket)
+			if err != nil {
+				logger.LogIf(ctx, fmt.Errorf("get Inherit acl from bucket %v failed %v", bucket, err))
+				return ObjectInfo{}, toObjectErr(err, bucket, object)
+			}
+			opts.AclGrant = append(opts.AclGrant, grants...)
 			if err := ofs.SetAcl(ctx, bucket, object, opts.AclGrant); err != nil {
 				logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
 				return ObjectInfo{}, toObjectErr(err, bucket, object)
 			}
 		} else {
-			grants := getDefaultAcl()
+			grants, err := ofs.getInheritAcl(ctx, bucket)
+			if err != nil {
+				logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
+				return ObjectInfo{}, toObjectErr(err, bucket, object)
+			}
+			grants = append(grants, getDefaultAcl()...)
 			if err := ofs.SetAcl(ctx, bucket, object, grants); err != nil {
 				logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
 				return ObjectInfo{}, toObjectErr(err, bucket, object)
@@ -966,17 +977,28 @@ func (ofs *OPFSObjects) putObject(ctx context.Context, bucket string, object str
 
 	// Entire object was written to the temp location, now it's safe to rename it to the actual location.
 	fsNSObjPath := pathJoin(ofs.fsPath, bucket, object)
-	if err = opfsRenameFile(ctx, fsTmpObjPath, fsNSObjPath); err != nil {
+	if err = opfsRenameFileWithCred(ctx, fsTmpObjPath, fsNSObjPath); err != nil {
 		return ObjectInfo{}, toObjectErr(err, bucket, object)
 	}
 
 	if opts.HaveAcl() {
+		grants, err := ofs.getInheritAcl(ctx, bucket)
+		if err != nil {
+			logger.LogIf(ctx, fmt.Errorf("get Inherit acl from bucket %v failed %v", bucket, err))
+			return ObjectInfo{}, toObjectErr(err, bucket, object)
+		}
+		opts.AclGrant = append(opts.AclGrant, grants...)
 		if err := ofs.SetAcl(ctx, bucket, object, opts.AclGrant); err != nil {
 			logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
 			return ObjectInfo{}, toObjectErr(err, bucket, object)
 		}
 	} else {
-		grants := getDefaultAcl()
+		grants, err := ofs.getInheritAcl(ctx, bucket)
+		if err != nil {
+			logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
+			return ObjectInfo{}, toObjectErr(err, bucket, object)
+		}
+		grants = append(grants, getDefaultAcl()...)
 		if err := ofs.SetAcl(ctx, bucket, object, grants); err != nil {
 			logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
 			return ObjectInfo{}, toObjectErr(err, bucket, object)
@@ -1398,7 +1420,7 @@ func (ofs *OPFSObjects) SetAcl(ctx context.Context, bucket, object string, grant
 	opfsgrants := make([]opfsAcl, 0, len(grants))
 	for _, g := range grants {
 		var og opfsAcl
-		og.aclbits = s3mapopfs(g.Permission, isdir)
+		og.aclbits, og.aclflag = s3mapopfs(g.Permission, isdir)
 		og.acltype = g.Grantee.XMLXSI
 		switch og.acltype {
 		case UserType:
@@ -1462,28 +1484,61 @@ func (ofs *OPFSObjects) GetAcl(ctx context.Context, bucket, object string) ([]gr
 		logger.LogIf(ctx, fmt.Errorf("ofapi get failed %v", err))
 		return nil, err
 	}
-	if len(opfsgrants) == 0 {
-		grantsSum := make([]grant, 0, 1)
-		uid, _, err := opfsGetUidGid(path)
-		if err != nil {
-			return grantsSum, err
-		}
-		cid, err := globalIAMSys.GetCanionialIdByUid(uid)
-		if err != nil {
-			if uid != 0 {
-				return grantsSum, err
-			}
-			cid = globalMinioDefaultOwnerID
-		}
-		var g grant
-		g.Grantee.XMLNS = AWSNS
-		g.Grantee.XMLXSI = UserType
-		g.Grantee.Type = UserType
-		g.Grantee.ID = cid
-		g.Permission = GrantPermFullControl
-		grantsSum = append(grantsSum, g)
-		return grantsSum, nil
+	grants, err := opfsAclToGrants(ctx, opfsgrants, isdir)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("convert to grant failed %v", err))
+		return []grant{}, err
 	}
+	grants, err = checkAndAddOwnerGrant(ctx, path, grants)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("check and add owner grant %v", err))
+		return grants, err
+	}
+	return grants, nil
+}
+
+func getOwnerGrant(path string) (grant, error) {
+	uid, _, err := opfsGetUidGid(path)
+	if err != nil {
+		return grant{}, err
+	}
+	cid, err := globalIAMSys.GetCanionialIdByUid(uid)
+	if err != nil {
+		if uid != 0 {
+			return grant{}, err
+		}
+		cid = globalMinioDefaultOwnerID
+	}
+	var g grant
+	g.Grantee.XMLNS = AWSNS
+	g.Grantee.XMLXSI = UserType
+	g.Grantee.Type = UserType
+	g.Grantee.ID = cid
+	g.Permission = GrantPermFullControl
+	return g, nil
+}
+
+func checkAndAddOwnerGrant(ctx context.Context, path string, grants []grant) ([]grant, error) {
+	ownerGrant, err := getOwnerGrant(path)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("get owner path %v failed %v", path, err))
+		return grants, err
+	}
+
+	for _, g := range grants {
+		if g.Grantee.XMLNS == ownerGrant.Grantee.XMLNS &&
+			g.Grantee.XMLXSI == ownerGrant.Grantee.XMLXSI &&
+			g.Grantee.Type == ownerGrant.Grantee.Type &&
+			g.Grantee.ID == ownerGrant.Grantee.ID &&
+			g.Permission == ownerGrant.Permission {
+			return grants, nil
+		}
+	}
+	grants = append(grants, ownerGrant)
+	return grants, nil
+}
+
+func opfsAclToGrants(ctx context.Context, opfsgrants []opfsAcl, isdir bool) ([]grant, error) {
 	grantsSum := make([]grant, 0, len(opfsgrants))
 	for _, og := range opfsgrants {
 		grants := make([]grant, 0, permissionMaxLen)
@@ -1535,4 +1590,20 @@ func (ofs *OPFSObjects) GetAcl(ctx context.Context, bucket, object string) ([]gr
 		grantsSum = append(grantsSum, grants...)
 	}
 	return grantsSum, nil
+}
+
+func (ofs *OPFSObjects) getInheritAcl(ctx context.Context, bucket string) ([]grant, error) {
+	path := filepath.Join(ofs.fsPath, bucket, "/")
+	opfsgrants, err := opfsGetInheritAclFromBucket(path)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("get bucket Inherit acl from bucket %v failed %v", path, err))
+		return []grant{}, err
+	}
+	grants, err := opfsAclToGrants(ctx, opfsgrants, true)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("convert to grant from opfsAcl %v failed %v", opfsgrants, err))
+		return []grant{}, err
+	}
+
+	return grants, nil
 }

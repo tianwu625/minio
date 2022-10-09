@@ -1014,7 +1014,7 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 	//get acl
-	acl, err := getACLFromRequest(ctx, r)
+	acl, err := getACLFromRequest(ctx, r, true)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
@@ -1661,7 +1661,7 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	//get acl
-	acl, err := getACLFromRequest(ctx, r)
+	acl, err := getACLFromRequest(ctx, r, true)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
@@ -2309,7 +2309,7 @@ func (api objectAPIHandlers) NewMultipartUploadHandler(w http.ResponseWriter, r 
 	}
 
 	//get acl
-	acl, err := getACLFromRequest(ctx, r)
+	acl, err := getACLFromRequest(ctx, r, true)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return

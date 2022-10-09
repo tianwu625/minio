@@ -323,7 +323,7 @@ func (api objectAPIHandlers) GetBucketACLHandler(w http.ResponseWriter, r *http.
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 			return
 		}
-		acle.XMLName = xml.Name {
+		acle.XMLName = xml.Name{
 			Space: "xmlns",
 			Local: "http://s3.amazonaws.com/doc/2006-03-01/",
 		}
@@ -425,6 +425,12 @@ func (api objectAPIHandlers) PutObjectACLHandler(w http.ResponseWriter, r *http.
 			return
 		}
 
+		if err := checkObjectAclGrant(acl.AccessControlList.Grants); err != nil {
+			logger.LogIf(ctx, fmt.Errorf("check acl failed %v", err))
+			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+			return
+		}
+
 		if err := aclAPI.SetAcl(ctx, bucket, object, acl.AccessControlList.Grants); err != nil {
 			logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
@@ -510,7 +516,7 @@ func (api objectAPIHandlers) GetObjectACLHandler(w http.ResponseWriter, r *http.
 		if err != nil {
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		}
-		acle.XMLName = xml.Name {
+		acle.XMLName = xml.Name{
 			Space: "xmlns",
 			Local: "http://s3.amazonaws.com/doc/2006-03-01/",
 		}

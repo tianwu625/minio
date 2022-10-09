@@ -753,7 +753,7 @@ func (api objectAPIHandlers) PutBucketHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	//get acl
-	acl, err := getACLFromRequest(ctx, r)
+	acl, err := getACLFromRequest(ctx, r, false)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
@@ -788,9 +788,8 @@ func (api objectAPIHandlers) PutBucketHandler(w http.ResponseWriter, r *http.Req
 		Location:    location,
 		LockEnabled: objectLockEnabled,
 		ForceCreate: forceCreate,
-		AclGrant : acl,
+		AclGrant:    acl,
 	}
-
 
 	if globalDNSConfig != nil {
 		sr, err := globalDNSConfig.Get(bucket)
