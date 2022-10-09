@@ -87,6 +87,13 @@ func opfsCopen(path string) (fd *C.ofapi_fd_t, err error) {
 	return fd, nil
 }
 
+func opfsMkdirWithCred(ctx context.Context, dirPath string) (err error) {
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+	return opfsMkdir(ctx, dirPath)
+}
+
 func opfsMkdir(ctx context.Context, dirPath string) (err error) {
 	if dirPath == "" {
 		logger.LogIf(ctx, errInvalidArgument)
@@ -100,10 +107,6 @@ func opfsMkdir(ctx context.Context, dirPath string) (err error) {
 
 	//FIXME only for test and demo
 	//dirPath = strings.ReplaceAll(dirPath, root.fspath, root.rootpath)
-
-	if err := setUserCred(ctx); err != nil {
-		return err
-	}
 	parentdir, bucketname := filepath.Split(strings.TrimSuffix(dirPath, SlashSeparator))
 	parentfd, err := opfsCopen(parentdir)
 	if err != nil {
@@ -1381,10 +1384,7 @@ func opfsmaps3List(opfsacl int, isDir bool) []string {
 	return permissionList
 }
 
-func opfsSetAclWithCred(ctx context.Context, path string, grants []opfsAcl) error {
-	if err := setUserCred(ctx); err != nil {
-		return err
-	}
+func opfsSetAcl(path string, grants []opfsAcl) error {
 	oa := make([]C.struct_oace, 0, len(grants))
 	for _, og := range grants {
 		var a C.struct_oace
@@ -1422,8 +1422,19 @@ func opfsSetAclWithCred(ctx context.Context, path string, grants []opfsAcl) erro
 	if err != C.int(0) {
 		return errSetattrFailed
 	}
-
 	return nil
+}
+
+func opfsSetAclWithRoot(path string, grants []opfsAcl) error {
+	setOpfsSessionRoot()
+	return opfsSetAcl(path, grants)
+}
+
+func opfsSetAclWithCred(ctx context.Context, path string, grants []opfsAcl) error {
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+	return opfsSetAcl(path, grants)
 }
 
 func (csoa *C.struct_oace) toSlice(slen int) []C.struct_oace {
@@ -1454,7 +1465,6 @@ func opfsGetAcl(path string) ([]opfsAcl, error) {
 	}
 
 	oa := oace.toSlice(int(acecnt))
-
 	opfsgrants := make([]opfsAcl, 0, int(acecnt))
 	for i := 0; i < int(acecnt); i++ {
 		if oa[i].oe_type == C.OFAPI_ACE_TYPE_DENIED {
@@ -1516,7 +1526,7 @@ func opfsGetUidGid(path string) (int, int, error) {
 	return int(oatt.oa_uid), int(oatt.oa_gid), nil
 }
 
-func opfsGetInheritAclFromBucket(path string) ([]opfsAcl, error) {
+func opfsGetInheritAclFromDir(path string) ([]opfsAcl, error) {
 	setOpfsSessionRoot()
 	opfsgrants, err := opfsGetAcl(path)
 	if err != nil {
@@ -1532,4 +1542,14 @@ func opfsGetInheritAclFromBucket(path string) ([]opfsAcl, error) {
 	}
 
 	return inheritGrants, nil
+}
+
+func inGroups(gid int, gids []int) bool {
+	for _, id := range gids {
+		if gid == id {
+			return true
+		}
+	}
+
+	return false
 }

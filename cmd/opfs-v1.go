@@ -261,7 +261,7 @@ func (ofs *OPFSObjects) MakeBucketWithLocation(ctx context.Context, bucket strin
 		return toObjectErr(err, bucket)
 	}
 
-	if err = opfsMkdir(ctx, bucketDir); err != nil {
+	if err = opfsMkdirWithCred(ctx, bucketDir); err != nil {
 		return toObjectErr(err, bucket)
 	}
 	//do acl here
@@ -269,13 +269,6 @@ func (ofs *OPFSObjects) MakeBucketWithLocation(ctx context.Context, bucket strin
 	if opts.HaveAcl() {
 		if err := ofs.SetAcl(ctx, bucket, "", opts.AclGrant); err != nil {
 			logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
-			return err
-		}
-	} else {
-		//set default acl for bucket
-		grants := getDefaultAcl()
-		if err := ofs.SetAcl(ctx, bucket, "", grants); err != nil {
-			logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
 			return err
 		}
 	}
@@ -880,31 +873,20 @@ func (ofs *OPFSObjects) putObject(ctx context.Context, bucket string, object str
 	// with a slash separator, we treat it like a valid operation
 	// and return success.
 	if isObjectDir(object, data.Size()) {
+		// put object in a bucket When the bucket have a same name object with put object
+		// the principal have the permission of bucket to put object but maybe don't have the permission delete object
+		// So opfs minio first delete exist object with root
+		if err = ofs.checkWritePermission(ctx, bucket, object); err != nil {
+			logger.LogIf(ctx, err)
+			return ObjectInfo{}, toObjectErr(err, bucket, object)
+		}
 		if err = opfsMkdirAllWithCred(ctx, pathJoin(ofs.fsPath, bucket, object), 0o777); err != nil {
 			logger.LogIf(ctx, err)
 			return ObjectInfo{}, toObjectErr(err, bucket, object)
 		}
 		//set acl for prefix object
-		if opts.HaveAcl() {
-			grants, err := ofs.getInheritAcl(ctx, bucket)
-			if err != nil {
-				logger.LogIf(ctx, fmt.Errorf("get Inherit acl from bucket %v failed %v", bucket, err))
-				return ObjectInfo{}, toObjectErr(err, bucket, object)
-			}
-			opts.AclGrant = append(opts.AclGrant, grants...)
-			if err := ofs.SetAcl(ctx, bucket, object, opts.AclGrant); err != nil {
-				logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
-				return ObjectInfo{}, toObjectErr(err, bucket, object)
-			}
-		} else {
-			grants, err := ofs.getInheritAcl(ctx, bucket)
-			if err != nil {
-				logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
-				return ObjectInfo{}, toObjectErr(err, bucket, object)
-			}
-			grants = append(grants, getDefaultAcl()...)
-			if err := ofs.SetAcl(ctx, bucket, object, grants); err != nil {
-				logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
+		if bucket != minioMetaBucket && opts.HaveAcl() {
+			if err := ofs.setObjectAcl(ctx, bucket, object, opts.AclGrant); err != nil {
 				return ObjectInfo{}, toObjectErr(err, bucket, object)
 			}
 		}
@@ -977,30 +959,18 @@ func (ofs *OPFSObjects) putObject(ctx context.Context, bucket string, object str
 
 	// Entire object was written to the temp location, now it's safe to rename it to the actual location.
 	fsNSObjPath := pathJoin(ofs.fsPath, bucket, object)
+	// put object in a bucket When the bucket have a same name object with put object
+	// the principal have the permission of bucket to put object but maybe don't have the permission delete object
+	// So opfs minio first delete exist object with root
+	if err = ofs.checkWritePermission(ctx, bucket, object); err != nil {
+		return ObjectInfo{}, toObjectErr(err, bucket, object)
+	}
 	if err = opfsRenameFileWithCred(ctx, fsTmpObjPath, fsNSObjPath); err != nil {
 		return ObjectInfo{}, toObjectErr(err, bucket, object)
 	}
 
-	if opts.HaveAcl() {
-		grants, err := ofs.getInheritAcl(ctx, bucket)
-		if err != nil {
-			logger.LogIf(ctx, fmt.Errorf("get Inherit acl from bucket %v failed %v", bucket, err))
-			return ObjectInfo{}, toObjectErr(err, bucket, object)
-		}
-		opts.AclGrant = append(opts.AclGrant, grants...)
-		if err := ofs.SetAcl(ctx, bucket, object, opts.AclGrant); err != nil {
-			logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
-			return ObjectInfo{}, toObjectErr(err, bucket, object)
-		}
-	} else {
-		grants, err := ofs.getInheritAcl(ctx, bucket)
-		if err != nil {
-			logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
-			return ObjectInfo{}, toObjectErr(err, bucket, object)
-		}
-		grants = append(grants, getDefaultAcl()...)
-		if err := ofs.SetAcl(ctx, bucket, object, grants); err != nil {
-			logger.LogIf(ctx, fmt.Errorf("set default acl failed %v", err))
+	if bucket != minioMetaBucket && opts.HaveAcl() {
+		if err := ofs.setObjectAcl(ctx, bucket, object, opts.AclGrant); err != nil {
 			return ObjectInfo{}, toObjectErr(err, bucket, object)
 		}
 	}
@@ -1594,7 +1564,7 @@ func opfsAclToGrants(ctx context.Context, opfsgrants []opfsAcl, isdir bool) ([]g
 
 func (ofs *OPFSObjects) getInheritAcl(ctx context.Context, bucket string) ([]grant, error) {
 	path := filepath.Join(ofs.fsPath, bucket, "/")
-	opfsgrants, err := opfsGetInheritAclFromBucket(path)
+	opfsgrants, err := opfsGetInheritAclFromDir(path)
 	if err != nil {
 		logger.LogIf(ctx, fmt.Errorf("get bucket Inherit acl from bucket %v failed %v", path, err))
 		return []grant{}, err
@@ -1606,4 +1576,124 @@ func (ofs *OPFSObjects) getInheritAcl(ctx context.Context, bucket string) ([]gra
 	}
 
 	return grants, nil
+}
+
+func checkDirHaveWritePermission(ctx context.Context, dirPath string) bool {
+	opfsgrants, err := opfsGetInheritAclFromDir(dirPath)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("get inheritAcl failed %v", err))
+		return false
+	}
+	uid, gids, err := getOpfsCred(ctx)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("get uid and gids failed %v", err))
+		return false
+	}
+	for _, g := range opfsgrants {
+		if g.acltype == UserType && uid == g.uid {
+			return true
+		}
+		if g.acltype == GroupType && inGroups(g.gid, gids) {
+			return true
+		}
+	}
+	return false
+}
+
+func checkDirHaveOwnerPermission(ctx context.Context, dirPath string) bool {
+	uid, gids, err := getOpfsCred(ctx)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("get uid and gids failed %v", err))
+		return false
+	}
+	//dir owner have permission
+	duid, _, err := opfsGetUidGid(dirPath)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("get uid and gids from path %v failed %v", dirPath, err))
+		return false
+	}
+
+	if duid == uid {
+		return true
+	}
+	opfsgrants, err := opfsGetAcl(dirPath)
+	for _, g := range opfsgrants {
+		if g.aclbits&AclDirFullControl == AclDirFullControl {
+			if g.acltype == UserType && g.uid == uid {
+				return true
+			}
+			if g.acltype == GroupType && inGroups(g.gid, gids) {
+				return true
+			}
+			if g.acltype == OwnerType && uid == g.uid {
+				return true
+			}
+			if g.acltype == EveryType {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (ofs *OPFSObjects) checkWritePermission(ctx context.Context, bucket, object string) error {
+
+	if bucket == minioMetaBucket {
+		return nil
+	}
+
+	if uid, _, err := getOpfsCred(ctx); uid == 0 && err == nil {
+		return nil
+	}
+
+	bucketPath := filepath.Join(ofs.fsPath, bucket, "/")
+	if !checkDirHaveWritePermission(ctx, bucketPath) &&
+		!checkDirHaveOwnerPermission(ctx, bucketPath) {
+		return errFileAccessDenied
+	}
+
+	// check object's parent have permission
+	parentPath := filepath.Dir(filepath.Join(ofs.fsPath, bucket, object))
+	if checkDirHaveWritePermission(ctx, parentPath) ||
+		checkDirHaveOwnerPermission(ctx, parentPath) {
+		return nil
+	}
+	//Maybe change bucket acl and don't change the object acl for recursion
+	//set new Acl with root
+	bucketGrants, err := opfsGetInheritAclFromDir(bucketPath)
+	if err != nil {
+		return err
+	}
+	dirGrants, err := opfsGetAcl(parentPath)
+	if err != nil {
+		return err
+	}
+	opfsgrants := make([]opfsAcl, 0, len(dirGrants)+len(bucketGrants))
+	for _, g := range dirGrants {
+		if g.aclbits&AclDirWrite == AclDirWrite {
+			continue
+		}
+		opfsgrants = append(opfsgrants, g)
+	}
+	opfsgrants = append(opfsgrants, bucketGrants...)
+	if err := opfsSetAclWithRoot(parentPath, opfsgrants); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ofs *OPFSObjects) setObjectAcl(ctx context.Context, bucket, object string, optsGrants []grant) error {
+	grants, err := ofs.getInheritAcl(ctx, bucket)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("get Inherit acl from bucket %v failed %v", bucket, err))
+		return err
+	}
+	optsGrants = append(optsGrants, grants...)
+	if err := ofs.SetAcl(ctx, bucket, object, optsGrants); err != nil {
+		logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
+		return err
+	}
+
+	return nil
 }
