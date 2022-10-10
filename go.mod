@@ -171,6 +171,7 @@ require (
 	github.com/mitchellh/mapstructure v1.4.3 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/msteinert/pam v1.1.0 // indirect
 	github.com/muesli/ansi v0.0.0-20211031195517-c9f0611b6c70 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
 	github.com/muesli/termenv v0.11.1-0.20220212125758-44cd13922739 // indirect
@@ -225,5 +226,7 @@ require (
 )
 
 replace github.com/minio/console => ../console
+
 replace github.com/minio/madmin-go => ../madmin-go
+
 replace github.com/minio/minio-go/v7 => ../minio-go

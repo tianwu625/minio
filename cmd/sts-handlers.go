@@ -38,6 +38,7 @@ import (
 	"github.com/minio/minio/internal/logger"
 	iampolicy "github.com/minio/pkg/iam/policy"
 	"github.com/minio/pkg/wildcard"
+	"github.com/msteinert/pam"
 )
 
 const (
@@ -592,31 +593,36 @@ func (sts *stsAPIHandlers) AssumeRoleWithLDAPIdentity(w http.ResponseWriter, r *
 	}
 
 	logger.LogIf(ctx, fmt.Errorf("username %v passwd %v", ldapUsername, ldapPassword))
+
 	/*
-	ldapUserDN, groupDistNames, err := globalLDAPConfig.Bind(ldapUsername, ldapPassword)
-	if err != nil {
-		err = fmt.Errorf("LDAP server error: %w", err)
-		writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue, err)
-		return
-	}
+		ldapUserDN, groupDistNames, err := globalLDAPConfig.Bind(ldapUsername, ldapPassword)
+		if err != nil {
+			err = fmt.Errorf("LDAP server error: %w", err)
+			writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue, err)
+			return
+		}
 
-	// Check if this user or their groups have a policy applied.
-	ldapPolicies, _ := globalIAMSys.PolicyDBGet(ldapUserDN, false, groupDistNames...)
-	if len(ldapPolicies) == 0 && globalAuthZPlugin == nil {
-		writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue,
-			fmt.Errorf("expecting a policy to be set for user `%s` or one of their groups: `%s` - rejecting this request",
-				ldapUserDN, strings.Join(groupDistNames, "`,`")))
-		return
-	}
+		// Check if this user or their groups have a policy applied.
+		ldapPolicies, _ := globalIAMSys.PolicyDBGet(ldapUserDN, false, groupDistNames...)
+		if len(ldapPolicies) == 0 && globalAuthZPlugin == nil {
+			writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue,
+				fmt.Errorf("expecting a policy to be set for user `%s` or one of their groups: `%s` - rejecting this request",
+					ldapUserDN, strings.Join(groupDistNames, "`,`")))
+			return
+		}
 
-	expiryDur, err := globalLDAPConfig.GetExpiryDuration(r.Form.Get(stsDurationSeconds))
-	if err != nil {
-		writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue, err)
-		return
-	}
+		expiryDur, err := globalLDAPConfig.GetExpiryDuration(r.Form.Get(stsDurationSeconds))
+		if err != nil {
+			writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue, err)
+			return
+		}
 	*/
+	if err := checkAuthValid(ldapUsername, ldapPassword); err != nil {
+		writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue, err)
+		return
+	}
 	ldapUserDN := ldapUsername
-	groupDistNames, err:= globalIAMSys.GetGroupsByName(ldapUsername)
+	groupDistNames, err := globalIAMSys.GetGroupsByName(ldapUsername)
 	if err != nil {
 		writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue, err)
 		return
@@ -630,9 +636,9 @@ func (sts *stsAPIHandlers) AssumeRoleWithLDAPIdentity(w http.ResponseWriter, r *
 	}
 
 	m := map[string]interface{}{
-               expClaim:  UTCNow().Add(expiryDur).Unix(),
-               ldapUser:  ldapUserDN,
-               ldapUserN: ldapUsername,
+		expClaim:  UTCNow().Add(expiryDur).Unix(),
+		ldapUser:  ldapUserDN,
+		ldapUserN: ldapUsername,
 	}
 
 	if len(sessionPolicyStr) > 0 {
@@ -961,4 +967,30 @@ func (sts *stsAPIHandlers) AssumeRoleWithCustomToken(w http.ResponseWriter, r *h
 	response.Result.AssumedUser = parentUser
 	response.Metadata.RequestID = w.Header().Get(xhttp.AmzRequestID)
 	writeSuccessResponseXML(w, encodeResponse(response))
+}
+
+func checkAuthValid(username, passwd string) error {
+	if username == globalActiveCred.AccessKey && passwd == globalActiveCred.SecretKey {
+		return nil
+	}
+	t, err := pam.StartFunc("openfs-minio", username, func(s pam.Style, msg string) (string, error) {
+		switch s {
+		case pam.PromptEchoOff:
+			return passwd, nil
+		case pam.PromptEchoOn, pam.ErrorMsg, pam.TextInfo:
+			return "", nil
+		default:
+			return "", errors.New("unrecognized message style")
+		}
+	})
+	if err != nil {
+		logger.LogIf(nil, fmt.Errorf("start pam failed %v", err))
+		return err
+	}
+	err = t.Authenticate(0)
+	if err != nil {
+		logger.LogIf(nil, fmt.Errorf("auth failed %v", err))
+		return err
+	}
+	return nil
 }
