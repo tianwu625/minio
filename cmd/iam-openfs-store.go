@@ -9,11 +9,11 @@ import (
 	"io"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
-	"strconv"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/minio/minio/internal/auth"
@@ -23,9 +23,9 @@ import (
 )
 
 const (
-	OpfsConfigDir          = "/var/lib/openfs/cconf/cur"
-	OpfsAuthFile           = "/auth.conf"
-	OpfsPrefix             = "openfs"
+	OpfsConfigDir           = "/var/lib/openfs/cconf/cur"
+	OpfsAuthFile            = "/auth.conf"
+	OpfsPrefix              = "openfs"
 	OpfsCanionicalKeyLen    = 32
 	OpfsCanionicalUserIDLen = 64
 	// IAM User Canonical prefix
@@ -180,8 +180,8 @@ func loadOPFSConfig(ctx context.Context, objPath string) (*IdRecord, error) {
 }
 
 const (
-	UserID = "userid"
-	GroupID = "groupid"
+	UserID   = "userid"
+	GroupID  = "groupid"
 	GroupIDs = "groupids"
 )
 
@@ -293,7 +293,7 @@ func (iamOpfs *IAMOpfsStore) loadUser(ctx context.Context, user string, userType
 			}
 		}
 		if !found {
-			logger.LogIf(ctx, fmt.Errorf("err %v", err))
+			logger.LogIf(ctx, fmt.Errorf("user not found %v", user))
 			return errNoSuchUser
 		}
 		return nil
@@ -301,7 +301,7 @@ func (iamOpfs *IAMOpfsStore) loadUser(ctx context.Context, user string, userType
 	var u UserIdentity
 	err := iamOpfs.loadIAMConfig(ctx, &u, getUserIdentityPath(user, userType))
 	if err != nil {
-		logger.LogIf(ctx, fmt.Errorf("err %v", err))
+		logger.LogIf(ctx, fmt.Errorf("user %v", user))
 		if err == errConfigNotFound {
 			return errNoSuchUser
 		}
@@ -652,13 +652,12 @@ func createOPFSServiceAccount(accessKey, secretKey, parentUser string) (*auth.Cr
 }
 
 const (
-	defaultOPFSDuration = time.Hour * 1
-	minOPFSExpiry time.Duration = 15 * time.Minute
-	maxOPFSExpiry time.Duration = 365 * 24 * time.Hour
+	defaultOPFSDuration               = time.Hour * 1
+	minOPFSExpiry       time.Duration = 15 * time.Minute
+	maxOPFSExpiry       time.Duration = 365 * 24 * time.Hour
 )
 
 func (iamOpfs *IAMOpfsStore) GetExpiryDuration(dsecs string) (time.Duration, error) {
-	logger.Info("in get duration")
 	if dsecs == "" {
 		return defaultOPFSDuration, nil
 	}

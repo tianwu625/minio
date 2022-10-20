@@ -538,7 +538,6 @@ func (sts *stsAPIHandlers) AssumeRoleWithClientGrants(w http.ResponseWriter, r *
 func (sts *stsAPIHandlers) AssumeRoleWithLDAPIdentity(w http.ResponseWriter, r *http.Request) {
 	ctx := newContext(r, w, "AssumeRoleWithLDAPIdentity")
 
-	logger.LogIf(ctx, fmt.Errorf(""))
 	defer logger.AuditLog(ctx, w, r, nil, stsLDAPPassword)
 
 	// Parse the incoming form data.
@@ -591,8 +590,6 @@ func (sts *stsAPIHandlers) AssumeRoleWithLDAPIdentity(w http.ResponseWriter, r *
 			return
 		}
 	}
-
-	logger.LogIf(ctx, fmt.Errorf("username %v passwd %v", ldapUsername, ldapPassword))
 
 	/*
 		ldapUserDN, groupDistNames, err := globalLDAPConfig.Bind(ldapUsername, ldapPassword)

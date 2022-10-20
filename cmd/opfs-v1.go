@@ -1514,7 +1514,7 @@ func opfsAclToGrants(ctx context.Context, opfsgrants []opfsAcl, isdir bool) ([]g
 		grants := make([]grant, 0, permissionMaxLen)
 		permissionList := opfsmaps3List(og.aclbits, isdir)
 		if len(permissionList) == 0 {
-			logger.Info("aclbits=%v", og.aclbits)
+			logger.LogIf(ctx, fmt.Errorf("bits %v can't convert to s3 acl", og.aclbits))
 			continue
 		}
 		for _, p := range permissionList {
