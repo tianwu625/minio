@@ -6,8 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"io"
-	"os"
+	"os/exec"
 	"path"
 	"strconv"
 	"strings"
@@ -23,8 +22,9 @@ import (
 )
 
 const (
-	OpfsConfigDir           = "/var/lib/openfs/cconf/cur"
-	OpfsAuthFile            = "/auth.conf"
+	OpfsCmdDir              = "/usr/libexec/openfs"
+	OpfsUserCmd             = "/openfs_auth_user_json"
+	OpfsGroupCmd            = "/openfs_auth_group_json"
 	OpfsPrefix              = "openfs"
 	OpfsCanionicalKeyLen    = 32
 	OpfsCanionicalUserIDLen = 64
@@ -33,27 +33,41 @@ const (
 	iamConfigUserIDDBUsersPrefix = iamConfigUserIDDBPrefix + "users/"
 )
 
-type IdUser struct {
-	Nt_passwd string `json:"nt_passwd, omitempty"`
-	Shell     string `json:"shell, omitempty"`
-	AccessKey string `json:"name"`
-	Pgroup    int    `json:"prim_group"`
-	SecretKey string `json:"passwd"`
-	Home      string `json:"home"`
-	Sgroups   []int  `json:"supl_groups, omitempty"`
-	Comments  string `json:"comments"`
-	Uid       int    `json:"uid"`
-}
-
-type IdGroup struct {
+type OpfsGroupId struct {
 	Gid  int    `json:"gid"`
 	Name string `json:"name"`
 }
 
-type IdRecord struct {
-	Version  int       `json:"version"`
-	IdUsers  []IdUser  `json:"users, omitempty"`
-	IdGroups []IdGroup `json:"groups, omitempty"`
+type OpfsUser struct {
+	Name    string        `json:"name"`
+	Buildin string        `json:"builtin"`
+	Groups  []OpfsGroupId `json:"groups, omitempty"`
+	Pgroup  OpfsGroupId   `json:"pgroup"`
+	Utype   string        `json:"type"`
+	Uid     int           `json:"uid"`
+}
+
+type UserResult struct {
+	Ret   int        `json:"ret"`
+	Users []OpfsUser `json:"users,omitempty"`
+}
+
+type OpfsUserId struct {
+	Uid  int    `json:"uid"`
+	Name string `json:"name"`
+}
+
+type OpfsGroup struct {
+	Name    string       `json:"name"`
+	Buildin string       `json:"builtin"`
+	Gtype   string       `json:"type"`
+	Gid     int          `json:"gid"`
+	Users   []OpfsUserId `json:"users,omitempty"`
+}
+
+type GroupResult struct {
+	Ret    int         `json:"ret"`
+	Groups []OpfsGroup `json:"groups, omitempty"`
 }
 
 type MappedUserID struct {
@@ -152,31 +166,35 @@ func (iamOpfs *IAMOpfsStore) loadIAMConfig(ctx context.Context, item interface{}
 	return json.Unmarshal(data, item)
 }
 
-func loadOPFSConfigBytes(ctx context.Context, objPath string) ([]byte, error) {
-	r, err := os.Open(objPath)
-	if err != nil {
-		logger.LogIf(ctx, fmt.Errorf("open opfs config path(%v) failed", objPath))
-		return nil, err
-	}
-	data, err := io.ReadAll(r)
-	if err != nil {
-		logger.LogIf(ctx, fmt.Errorf("read opfs config path(%v) failed", objPath))
-		return nil, err
-	}
-	return data, nil
-}
+func loadOPFSUsers(ctx context.Context, cmdPath string) ([]OpfsUser, error) {
+	c := exec.Command(cmdPath)
 
-func loadOPFSConfig(ctx context.Context, objPath string) (*IdRecord, error) {
-	data, err := loadOPFSConfigBytes(ctx, objPath)
-	if err != nil {
-		return nil, err
-	}
+	output, _ := c.CombinedOutput()
+
 	json := jsoniter.ConfigCompatibleWithStandardLibrary
 
-	var ids IdRecord
-	json.Unmarshal(data, &ids)
+	var res UserResult
+	json.Unmarshal(output, &res)
+	if res.Ret != 0 {
+		return []OpfsUser{}, fmt.Errorf("get opfs auth user failed")
+	}
+	return res.Users, nil
+}
 
-	return &ids, nil
+func loadOPFSGroups(ctx context.Context, cmdPath string) ([]OpfsGroup, error) {
+	c := exec.Command(cmdPath)
+
+	output, _ := c.CombinedOutput()
+
+	json := jsoniter.ConfigCompatibleWithStandardLibrary
+
+	var res GroupResult
+	json.Unmarshal(output, &res)
+	if res.Ret != 0 {
+		return []OpfsGroup{}, fmt.Errorf("get opfs auth group failed")
+	}
+
+	return res.Groups, nil
 }
 
 const (
@@ -185,37 +203,33 @@ const (
 	GroupIDs = "groupids"
 )
 
-func createUserIdentityfromOPFS(uid IdUser) (*auth.Credentials, error) {
-	cred, err := auth.CreateSignOnCredentials(uid.AccessKey, uid.SecretKey)
+func createUserIdentityfromOPFS(u OpfsUser) (*auth.Credentials, error) {
+	cred, err := auth.CreateSignOnCredentials(u.Name, "fake-password")
 	if err != nil {
-		logger.LogIf(nil, fmt.Errorf("accessKey=%v , secretKey=%v", uid.AccessKey, uid.SecretKey))
+		logger.LogIf(nil, fmt.Errorf("accessKey=%v, uid=%v", u.Name, u.Uid))
 		return nil, err
 	}
 	claims := make(map[string]interface{})
-	claims[UserID] = uid.Uid
-	claims[GroupID] = uid.Pgroup
-	claims[GroupIDs] = uid.Sgroups
+	claims[UserID] = u.Uid
+	claims[GroupID] = u.Pgroup.Gid
+	gids := make([]int, 0, len(u.Groups))
+	for _, opfsgid := range u.Groups {
+		gids = append(gids, opfsgid.Gid)
+	}
+	claims[GroupIDs] = gids
 	cred.Claims = claims
 	return &cred, nil
 }
 
-func createGroupInfoOPFS(gid IdGroup, ids *IdRecord) *GroupInfo {
+func createGroupInfoOPFS(g OpfsGroup) *GroupInfo {
 	var members []string
 
-	for _, uid := range ids.IdUsers {
-		if uid.Pgroup == gid.Gid {
-			members = append(members, uid.AccessKey)
-		} else {
-			for sid := range uid.Sgroups {
-				if sid == gid.Gid {
-					members = append(members, uid.AccessKey)
-				}
-			}
-		}
+	for _, u := range g.Users {
+		members = append(members, u.Name)
 	}
-	g := newGroupInfo(members)
-	g.Attr = gid.Gid
-	return &g
+	ginfo := newGroupInfo(members)
+	ginfo.Attr = g.Gid
+	return &ginfo
 }
 
 func (iamOpfs *IAMOpfsStore) deleteIAMConfig(ctx context.Context, path string) error {
@@ -267,17 +281,17 @@ func (iamOpfs *IAMOpfsStore) loadPolicyDocs(ctx context.Context, m map[string]Po
 
 func (iamOpfs *IAMOpfsStore) loadUser(ctx context.Context, user string, userType IAMUserType, m map[string]auth.Credentials) error {
 	if userType == regUser {
-		configPath := OpfsConfigDir + OpfsAuthFile
-		ids, err := loadOPFSConfig(ctx, configPath)
+		cmdPath := OpfsCmdDir + OpfsUserCmd
+		users, err := loadOPFSUsers(ctx, cmdPath)
 		if err != nil {
 			logger.LogIf(ctx, fmt.Errorf("err %v", err))
 			return err
 		}
 		found := false
-		for _, uid := range ids.IdUsers {
-			if uid.AccessKey == user {
+		for _, u := range users {
+			if u.Name == user {
 				found = true
-				cred, err := createUserIdentityfromOPFS(uid)
+				cred, err := createUserIdentityfromOPFS(u)
 				if err != nil {
 					logger.LogIf(ctx, fmt.Errorf("err %v", err))
 					return err
@@ -324,7 +338,7 @@ func (iamOpfs *IAMOpfsStore) loadUser(ctx context.Context, user string, userType
 }
 
 func (iamOpfs *IAMOpfsStore) loadUsers(ctx context.Context, userType IAMUserType, m map[string]auth.Credentials) error {
-	var configPath string
+	var opfsCmdPath string
 	var basePrefix string
 	switch userType {
 	case svcUser:
@@ -332,23 +346,23 @@ func (iamOpfs *IAMOpfsStore) loadUsers(ctx context.Context, userType IAMUserType
 	case stsUser:
 		basePrefix = iamConfigSTSPrefix
 	default:
-		configPath = OpfsConfigDir + OpfsAuthFile
+		opfsCmdPath = OpfsCmdDir + OpfsUserCmd
 	}
 
 	if userType == regUser {
-		ids, err := loadOPFSConfig(ctx, configPath)
+		users, err := loadOPFSUsers(ctx, opfsCmdPath)
 		if err != nil {
 			logger.LogIf(ctx, fmt.Errorf("err %v", err))
 			return err
 		}
 
-		for _, uid := range ids.IdUsers {
-			cred, err := createUserIdentityfromOPFS(uid)
+		for _, u := range users {
+			cred, err := createUserIdentityfromOPFS(u)
 			if err != nil {
 				logger.LogIf(ctx, fmt.Errorf("err %v", err))
 				return err
 			}
-			mu, err := iamOpfs.loadUserCanonicalID(ctx, uid.AccessKey, userType)
+			mu, err := iamOpfs.loadUserCanonicalID(ctx, u.Name, userType)
 			if err != nil {
 				logger.LogIf(ctx, fmt.Errorf("err %v", err))
 				return err
@@ -376,16 +390,16 @@ func (iamOpfs *IAMOpfsStore) loadUsers(ctx context.Context, userType IAMUserType
 }
 
 func (iamOpfs *IAMOpfsStore) loadGroup(ctx context.Context, group string, m map[string]GroupInfo) error {
-	configPath := OpfsConfigDir + OpfsAuthFile
-	ids, err := loadOPFSConfig(ctx, configPath)
+	cmdPath := OpfsCmdDir + OpfsGroupCmd
+	groups, err := loadOPFSGroups(ctx, cmdPath)
 	if err != nil {
 		logger.LogIf(ctx, fmt.Errorf("err %v", err))
 		return err
 	}
-	for _, gid := range ids.IdGroups {
-		if gid.Name == group {
-			ginfo := createGroupInfoOPFS(gid, ids)
-			m[gid.Name] = *ginfo
+	for _, g := range groups {
+		if g.Name == group {
+			ginfo := createGroupInfoOPFS(g)
+			m[g.Name] = *ginfo
 			return nil
 		}
 	}
@@ -393,15 +407,15 @@ func (iamOpfs *IAMOpfsStore) loadGroup(ctx context.Context, group string, m map[
 }
 
 func (iamOpfs *IAMOpfsStore) loadGroups(ctx context.Context, m map[string]GroupInfo) error {
-	configPath := OpfsConfigDir + OpfsAuthFile
-	ids, err := loadOPFSConfig(ctx, configPath)
+	cmdPath := OpfsCmdDir + OpfsGroupCmd
+	groups, err := loadOPFSGroups(ctx, cmdPath)
 	if err != nil {
 		logger.LogIf(ctx, fmt.Errorf("err %v", err))
 		return err
 	}
-	for _, gid := range ids.IdGroups {
-		ginfo := createGroupInfoOPFS(gid, ids)
-		m[gid.Name] = *ginfo
+	for _, g := range groups {
+		ginfo := createGroupInfoOPFS(g)
+		m[g.Name] = *ginfo
 	}
 	return nil
 }
