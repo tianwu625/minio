@@ -1709,6 +1709,57 @@ func (sys *IAMSys) GetCombinedPolicy(policies ...string) iampolicy.Policy {
 	return policy
 }
 
+var opfsObjectAclSet = []iampolicy.Action{
+	iampolicy.GetObjectAction,
+	iampolicy.GetObjectAclAction,
+	iampolicy.PutObjectAclAction,
+}
+
+func opfsHandleObjectAction(action iampolicy.Action) bool {
+	for _, ac := range opfsObjectAclSet {
+		if ac == action {
+			return true
+		}
+	}
+
+	return false
+}
+
+var opfsBucketAclSet = []iampolicy.Action{
+	iampolicy.ListBucketAction,
+	iampolicy.ListBucketMultipartUploadsAction,
+	iampolicy.PutObjectAction,
+	iampolicy.GetBucketAclAction,
+	iampolicy.PutBucketAclAction,
+}
+
+func opfsHandleBucketAction(action iampolicy.Action) bool {
+	for _, ac := range opfsBucketAclSet {
+		if ac == action {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (sys *IAMSys) skipPermissionCheck(args iampolicy.Args) bool {
+
+	if sys.usersSysType != OPFSUsersSysType {
+		return false
+	}
+
+	if args.ObjectName != "" && opfsHandleObjectAction(args.Action) {
+		return true
+	}
+
+	if opfsHandleBucketAction(args.Action) {
+		return true
+	}
+
+	return false
+}
+
 // IsAllowed - checks given policy args is allowed to continue the Rest API.
 func (sys *IAMSys) IsAllowed(args iampolicy.Args) bool {
 	// If opa is configured, use OPA always.
@@ -1722,6 +1773,12 @@ func (sys *IAMSys) IsAllowed(args iampolicy.Args) bool {
 
 	// Policies don't apply to the owner.
 	if args.IsOwner {
+		return true
+	}
+
+	// OPFS and ACL can handle, openfs fs will do permission for this action
+	// minio just let the action go
+	if sys.skipPermissionCheck(args) {
 		return true
 	}
 
