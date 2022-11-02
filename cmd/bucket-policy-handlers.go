@@ -39,6 +39,33 @@ const (
 	bucketPolicyConfig = "policy.json"
 )
 
+var opfsBucketPolicyAclSet = []policy.Action{
+	policy.GetObjectAction,
+	policy.GetObjectAclAction,
+	policy.PutObjectAclAction,
+	policy.ListBucketAction,
+	policy.ListBucketMultipartUploadsAction,
+	policy.PutObjectAction,
+	policy.GetBucketAclAction,
+	policy.PutBucketAclAction,
+}
+
+func (api objectAPIHandlers) filtersOPFSAclSupport(p *policy.Policy) bool {
+	objAPI := api.ObjectAPI()
+	if _, aclSupport := objAPI.(*GatewayLocker).ObjectLayer.(ObjectAcler); !aclSupport {
+		return false
+	}
+	aclset := policy.NewActionSet(opfsBucketPolicyAclSet...)
+
+	for _, s := range p.Statements {
+		aset := s.Actions.Intersection(aclset)
+		if len(aset) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // PutBucketPolicyHandler - This HTTP handler stores given bucket policy configuration as per
 // https://docs.aws.amazon.com/AmazonS3/latest/dev/access-policy-language-overview.html
 func (api objectAPIHandlers) PutBucketPolicyHandler(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +86,7 @@ func (api objectAPIHandlers) PutBucketPolicyHandler(w http.ResponseWriter, r *ht
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
 		return
 	}
+
 
 	ctx = newOpfsRoot(ctx)
 
@@ -95,6 +123,10 @@ func (api objectAPIHandlers) PutBucketPolicyHandler(w http.ResponseWriter, r *ht
 
 	// Version in policy must not be empty
 	if bucketPolicy.Version == "" {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrMalformedPolicy), r.URL)
+		return
+	}
+	if api.filtersOPFSAclSupport(bucketPolicy) {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrMalformedPolicy), r.URL)
 		return
 	}

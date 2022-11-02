@@ -609,10 +609,30 @@ func (sys *IAMSys) ListPolicyDocs(ctx context.Context, bucketName string) (map[s
 	}
 }
 
+func (sys *IAMSys)filtersOPFSAclSupport(p iampolicy.Policy) bool {
+	if sys.usersSysType != OPFSUsersSysType {
+		return false
+	}
+	aclist := append(opfsObjectAclSet, opfsBucketAclSet...)
+	aclset := iampolicy.NewActionSet(aclist...)
+	for _, s := range p.Statements {
+		aset := s.Actions.Intersection(aclset)
+		if len(aset) != 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
 // SetPolicy - sets a new named policy.
 func (sys *IAMSys) SetPolicy(ctx context.Context, policyName string, p iampolicy.Policy) error {
 	if !sys.Initialized() {
 		return errServerNotInitialized
+	}
+
+	if sys.filtersOPFSAclSupport(p) {
+		return fmt.Errorf("Unsupport Action is detected, Using ACL to manage these Action")
 	}
 
 	err := sys.store.SetPolicy(ctx, policyName, p)
