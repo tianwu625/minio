@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -970,6 +971,9 @@ func checkAuthValid(username, passwd string) error {
 	if username == globalActiveCred.AccessKey && passwd == globalActiveCred.SecretKey {
 		return nil
 	}
+	//FIXME update winbind link
+	c := exec.Command("wbinfo", "-t")
+	c.CombinedOutput()
 	t, err := pam.StartFunc("openfs-minio", username, func(s pam.Style, msg string) (string, error) {
 		switch s {
 		case pam.PromptEchoOff:
