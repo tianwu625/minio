@@ -19,6 +19,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -1137,6 +1138,7 @@ func (a adminAPIHandlers) AccountInfoHandler(w http.ResponseWriter, r *http.Requ
 		writeErrorResponseJSON(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL)
 		return
 	}
+	ctx = newOpfsRoot(ctx)
 
 	// Set prefix value for "s3:prefix" policy conditionals.
 	r.Header.Set("prefix", "")
@@ -1147,8 +1149,8 @@ func (a adminAPIHandlers) AccountInfoHandler(w http.ResponseWriter, r *http.Requ
 	// Check if we are asked to return prefix usage
 	enablePrefixUsage := r.Form.Get("prefix-usage") == "true"
 
-	isAllowedAccess := func(bucketName string) (rd, wr bool) {
-		if globalIAMSys.IsAllowed(iampolicy.Args{
+	isAllowedAccess := func(ctx context.Context, bucketName string, objectAPI ObjectLayer) (rd, wr bool) {
+		if globalIAMSys.HavePermission(ctx, iampolicy.Args{
 			AccountName:     cred.AccessKey,
 			Groups:          cred.Groups,
 			Action:          iampolicy.ListBucketAction,
@@ -1157,11 +1159,11 @@ func (a adminAPIHandlers) AccountInfoHandler(w http.ResponseWriter, r *http.Requ
 			IsOwner:         owner,
 			ObjectName:      "",
 			Claims:          claims,
-		}) {
+		}, objectAPI) {
 			rd = true
 		}
 
-		if globalIAMSys.IsAllowed(iampolicy.Args{
+		if globalIAMSys.HavePermission(ctx, iampolicy.Args{
 			AccountName:     cred.AccessKey,
 			Groups:          cred.Groups,
 			Action:          iampolicy.GetBucketLocationAction,
@@ -1170,11 +1172,11 @@ func (a adminAPIHandlers) AccountInfoHandler(w http.ResponseWriter, r *http.Requ
 			IsOwner:         owner,
 			ObjectName:      "",
 			Claims:          claims,
-		}) {
+		}, objectAPI) {
 			rd = true
 		}
 
-		if globalIAMSys.IsAllowed(iampolicy.Args{
+		if globalIAMSys.HavePermission(ctx, iampolicy.Args{
 			AccountName:     cred.AccessKey,
 			Groups:          cred.Groups,
 			Action:          iampolicy.PutObjectAction,
@@ -1183,7 +1185,7 @@ func (a adminAPIHandlers) AccountInfoHandler(w http.ResponseWriter, r *http.Requ
 			IsOwner:         owner,
 			ObjectName:      "",
 			Claims:          claims,
-		}) {
+		}, objectAPI) {
 			wr = true
 		}
 
@@ -1249,7 +1251,7 @@ func (a adminAPIHandlers) AccountInfoHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	for _, bucket := range buckets {
-		rd, wr := isAllowedAccess(bucket.Name)
+		rd, wr := isAllowedAccess(ctx, bucket.Name, objectAPI)
 		if rd || wr {
 			// Fetch the data usage of the current bucket
 			var size uint64

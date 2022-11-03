@@ -609,7 +609,7 @@ func (sys *IAMSys) ListPolicyDocs(ctx context.Context, bucketName string) (map[s
 	}
 }
 
-func (sys *IAMSys)filtersOPFSAclSupport(p iampolicy.Policy) bool {
+func (sys *IAMSys) filtersOPFSAclSupport(p iampolicy.Policy) bool {
 	if sys.usersSysType != OPFSUsersSysType {
 		return false
 	}
@@ -1867,6 +1867,83 @@ func (sys *IAMSys) GetGroupsByName(name string) ([]string, error) {
 
 func (sys *IAMSys) GetExpiryDuration(dsecs string) (time.Duration, error) {
 	return sys.store.GetExpiryDuration(dsecs)
+}
+
+func actionToAcl(action iampolicy.Action) string {
+	if action == iampolicy.GetObjectAction ||
+		action == iampolicy.ListBucketAction ||
+		action == iampolicy.ListBucketMultipartUploadsAction {
+		return GrantPermRead
+	} else if action == iampolicy.PutObjectAction {
+		return GrantPermWrite
+	} else if action == iampolicy.GetObjectAclAction ||
+		action == iampolicy.GetBucketAclAction {
+		return GrantPermReadAcp
+	} else if action == iampolicy.PutObjectAclAction ||
+		action == iampolicy.PutBucketAclAction {
+		return GrantPermWriteAcp
+	}
+	return ""
+}
+
+func (sys *IAMSys) HavePermission(ctx context.Context, args iampolicy.Args, api ObjectLayer) bool {
+
+	if globalAuthZPlugin != nil {
+		ok, err := globalAuthZPlugin.IsAllowed(args)
+		if err != nil {
+			logger.LogIf(GlobalContext, err)
+		}
+		return ok
+	}
+
+	if args.IsOwner {
+		return true
+	}
+
+	if sys.usersSysType != OPFSUsersSysType {
+		return sys.IsAllowed(args)
+	}
+	//with acl to adjust permission
+	if sys.skipPermissionCheck(args) {
+		aclAPI, _ := api.(*GatewayLocker).ObjectLayer.(ObjectAcler)
+		grants, _ := aclAPI.GetAcl(ctx, args.BucketName, args.ObjectName)
+		acl := actionToAcl(args.Action)
+		istemp, tmpParent, _ := sys.IsTempUser(args.AccountName)
+		isacc, accParent, _ := sys.IsServiceAccount(args.AccountName)
+		cname := ""
+		if istemp {
+			cname = tmpParent
+		} else if isacc {
+			cname = accParent
+		} else {
+			cname = args.AccountName
+		}
+		var gnames set.StringSet
+		if (istemp || isacc) && len(args.Groups) != 0 {
+			gnames = set.CreateStringSet(args.Groups...)
+		} else {
+			gnames = sys.store.GetUserGroupMembership(cname)
+		}
+		cid, _ := sys.store.GetCanionialIDByUsername(cname)
+		for _, g := range grants {
+			if g.Permission == acl || g.Permission == GrantPermFullControl {
+				switch g.Grantee.Type {
+				case UserType:
+					if cid == g.Grantee.ID {
+						return true
+					}
+				case GroupType:
+					pg, _ := parseURIGroup(g.Grantee.URI)
+					if gnames.Contains(pg) {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	return sys.IsAllowed(args)
 }
 
 // NewIAMSys - creates new config system object.

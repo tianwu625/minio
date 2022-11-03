@@ -800,7 +800,7 @@ func (store *IAMStoreSys) GetGroupDescription(group string) (gd madmin.GroupDesc
 	policy := strings.Join(ps, ",")
 
 	if store.getUsersSysType() != MinIOUsersSysType &&
-	   store.getUsersSysType() != OPFSUsersSysType {
+		store.getUsersSysType() != OPFSUsersSysType {
 		return madmin.GroupDesc{
 			Name:      group,
 			Policy:    policy,
@@ -1354,18 +1354,19 @@ func (store *IAMStoreSys) GetUserDetail(name string) (u madmin.UserDetail, err e
 	sgids32 := *(*[]int32)(unsafe.Pointer(&sgids))
 
 	return madmin.UserDetail{
-		CanonicalID:cred.Claims["usercanionialid"].(string),
-		Pgid:int32(cred.Claims[GroupID].(int)),
-		Sgids:sgids32,
+		CanonicalID: cred.Claims["usercanionialid"].(string),
+		Pgid:        int32(cred.Claims[GroupID].(int)),
+		Sgids:       sgids32,
 		Status: func() madmin.AccountStatus {
 			if cred.IsValid() {
 				return madmin.AccountEnabled
 			}
 			return madmin.AccountDisabled
 		}(),
-		Uid:int32(cred.Claims[UserID].(int)),
+		Uid: int32(cred.Claims[UserID].(int)),
 	}, nil
 }
+
 // PolicyMappingNotificationHandler - handles updating a policy mapping from storage.
 func (store *IAMStoreSys) PolicyMappingNotificationHandler(ctx context.Context, userOrGroup string, isGroup bool, userType IAMUserType) error {
 	if userOrGroup == "" {
@@ -2193,4 +2194,30 @@ func (store *IAMStoreSys) GetExpiryDuration(dsecs string) (time.Duration, error)
 		return 0, NotImplemented{}
 	}
 	return expgeter.GetExpiryDuration(dsecs)
+}
+
+func (store *IAMStoreSys) GetUserGroupMembership(username string) set.StringSet {
+	cache := store.lock()
+	defer store.unlock()
+
+	return cache.iamUserGroupMemberships[username]
+}
+
+func (store *IAMStoreSys) GetCanionialIDByUsername(username string) (string, error) {
+	cache := store.lock()
+	defer store.unlock()
+
+	ucred, ok := cache.iamUsersMap[username]
+	if !ok {
+		return "", errNoSuchUser
+	}
+	gider, ok := store.IAMStorageAPI.(GetUserCanionialIDer)
+	if !ok {
+		return "", NotImplemented{}
+	}
+	canionialId, err := gider.GetUserCanionialID(&ucred)
+	if err != nil {
+		return "", err
+	}
+	return canionialId, nil
 }
