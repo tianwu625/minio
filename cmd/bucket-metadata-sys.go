@@ -205,6 +205,20 @@ func (sys *BucketMetadataSys) GetVersioningConfig(bucket string) (*versioning.Ve
 // GetTaggingConfig returns configured tagging config
 // The returned object may not be modified.
 func (sys *BucketMetadataSys) GetTaggingConfig(bucket string) (*tags.Tags, time.Time, error) {
+	if globalIsGateway && (globalGatewayName == OPFSBackendGateway) {
+		objAPI := newObjectLayerFn()
+		if objAPI == nil {
+			return nil, time.Time{}, errServerNotInitialized
+		}
+		meta, err := loadBucketMetadata(GlobalContext, objAPI, bucket)
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+		if meta.taggingConfig == nil {
+			return nil, time.Time{}, BucketTaggingNotFound{Bucket: bucket}
+		}
+		return meta.taggingConfig, meta.TaggingConfigUpdatedAt, nil
+	}
 	meta, err := sys.GetConfig(GlobalContext, bucket)
 	if err != nil {
 		if errors.Is(err, errConfigNotFound) {
@@ -420,9 +434,12 @@ func (sys *BucketMetadataSys) GetConfig(ctx context.Context, bucket string) (Buc
 	if err != nil {
 		return meta, err
 	}
-	sys.Lock()
-	sys.metadataMap[bucket] = meta
-	sys.Unlock()
+
+	if !globalIsGateway {
+		sys.Lock()
+		sys.metadataMap[bucket] = meta
+		sys.Unlock()
+	}
 
 	return meta, nil
 }
