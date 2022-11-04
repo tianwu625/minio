@@ -295,7 +295,7 @@ func OpfsOpen(path string, flag int, perm os.FileMode) (*opfsFile, error) {
 			var pfd *C.ofapi_fd_t
 			ret = C.ofapi_open(root.fs, C.CString(dirpath), &pfd)
 			if ret != C.int(0) {
-				logger.LogIf(nil, errors.New(fmt.Sprintf("open parent failed flags=%x, path=%s", flag, path)))
+				logger.LogIf(nil, errors.New(fmt.Sprintf("open parent failed flags=%x, path=%s", flag, dirpath)))
 				return nil, os.ErrInvalid
 			}
 			defer C.ofapi_close(pfd)

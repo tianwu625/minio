@@ -489,7 +489,8 @@ func opfsIsFile(ctx context.Context, filePath string) bool {
 
 func opfsMkdirAll(path string, mode os.FileMode) error {
 	//FIXME only for test and demo
-	path = strings.TrimSuffix(path, SlashSeparator)[len(root.rootpath)+1:]
+	path = strings.TrimPrefix(strings.TrimSuffix(path, SlashSeparator), root.rootpath)
+	path = strings.TrimPrefix(path, SlashSeparator)
 	ipaths := strings.Split(path, SlashSeparator)
 	var p strings.Builder
 	p.WriteString(root.rootpath)

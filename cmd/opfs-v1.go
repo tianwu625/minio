@@ -354,7 +354,7 @@ func (ofs *OPFSObjects) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 	}
 
 	setOpfsSessionRoot()
-	entries, err := opfsReadDirWithOpts(ofs.fsPath, readDirOpts{count: -1, followDirSymlink: true})
+	entries, err := opfsReadDirWithOpts(pathJoin(ofs.fsPath, SlashSeparator), readDirOpts{count: -1, followDirSymlink: true})
 	if err != nil {
 		logger.LogIf(ctx, errDiskNotFound)
 		return nil, toObjectErr(errDiskNotFound)

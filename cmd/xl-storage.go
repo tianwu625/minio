@@ -130,7 +130,7 @@ func checkPathLength(pathName string) error {
 	}
 
 	// On Unix we reject paths if they are just '.', '..' or '/'
-	if pathName == "." || pathName == ".." || pathName == slashSeparator {
+	if pathName == "." || pathName == ".." {
 		return errFileAccessDenied
 	}
 
