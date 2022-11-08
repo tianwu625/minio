@@ -1408,7 +1408,8 @@ func (store *IAMStoreSys) UserNotificationHandler(ctx context.Context, accessKey
 		delete(cache.iamUsersMap, accessKey)
 
 		// 1. Start with updating user-group memberships
-		if store.getUsersSysType() == MinIOUsersSysType {
+		if store.getUsersSysType() == MinIOUsersSysType ||
+			store.getUsersSysType() == OPFSUsersSysType {
 			memberOf := cache.iamUserGroupMemberships[accessKey].ToSlice()
 			for _, group := range memberOf {
 				removeErr := removeMembersFromGroup(ctx, store, cache, group, []string{accessKey}, true)
