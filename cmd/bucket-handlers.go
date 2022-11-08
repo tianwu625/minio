@@ -370,7 +370,7 @@ func (api objectAPIHandlers) ListBucketsHandler(w http.ResponseWriter, r *http.R
 		// Use the following trick to filter in place
 		// https://github.com/golang/go/wiki/SliceTricks#filter-in-place
 		for _, bucketInfo := range bucketsInfo {
-			if globalIAMSys.IsAllowed(iampolicy.Args{
+			if globalIAMSys.HavePermission(ctx, iampolicy.Args{
 				AccountName:     cred.AccessKey,
 				Groups:          cred.Groups,
 				Action:          iampolicy.ListBucketAction,
@@ -379,7 +379,7 @@ func (api objectAPIHandlers) ListBucketsHandler(w http.ResponseWriter, r *http.R
 				IsOwner:         owner,
 				ObjectName:      "",
 				Claims:          cred.Claims,
-			}) {
+			}, objectAPI) {
 				bucketsInfo[n] = bucketInfo
 				n++
 			} else if globalIAMSys.IsAllowed(iampolicy.Args{

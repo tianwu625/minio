@@ -1933,6 +1933,9 @@ func (sys *IAMSys) HavePermission(ctx context.Context, args iampolicy.Args, api 
 						return true
 					}
 				case GroupType:
+					if isAllUser(g.Grantee.URI) {
+						return true
+					}
 					pg, _ := parseURIGroup(g.Grantee.URI)
 					if gnames.Contains(pg) {
 						return true
