@@ -6,8 +6,12 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/minio/minio/internal/auth"
 	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/minio/internal/logger"
+	bucketpolicy "github.com/minio/pkg/bucket/policy"
+	"github.com/minio/pkg/bucket/policy/condition"
+	iampolicy "github.com/minio/pkg/iam/policy"
 )
 
 const (
@@ -310,4 +314,109 @@ func checkObjectAclGrant(grants []grant) error {
 	}
 
 	return nil
+}
+
+func actionToAcl(action iampolicy.Action) string {
+	if action == iampolicy.GetObjectAction ||
+		action == iampolicy.ListBucketAction ||
+		action == iampolicy.ListBucketMultipartUploadsAction {
+		return GrantPermRead
+	} else if action == iampolicy.PutObjectAction {
+		return GrantPermWrite
+	} else if action == iampolicy.GetObjectAclAction ||
+		action == iampolicy.GetBucketAclAction {
+		return GrantPermReadAcp
+	} else if action == iampolicy.PutObjectAclAction ||
+		action == iampolicy.PutBucketAclAction {
+		return GrantPermWriteAcp
+	}
+	return ""
+}
+
+func aclToAction(acl string) []iampolicy.Action {
+	//full control is max, and len is 6
+	actions := make([]iampolicy.Action, 0, 6)
+	switch acl {
+	case GrantPermRead:
+		actions = append(actions, iampolicy.GetObjectAction,
+			iampolicy.ListBucketAction, iampolicy.ListBucketMultipartUploadsAction)
+	case GrantPermWrite:
+		actions = append(actions, iampolicy.PutObjectAction)
+	case GrantPermReadAcp:
+		actions = append(actions, iampolicy.GetBucketAclAction)
+	case GrantPermWriteAcp:
+		actions = append(actions, iampolicy.PutBucketAclAction)
+	case GrantPermFullControl:
+		actions = append(actions, iampolicy.GetObjectAction,
+			iampolicy.ListBucketAction, iampolicy.ListBucketMultipartUploadsAction,
+			iampolicy.PutObjectAction, iampolicy.GetBucketAclAction, iampolicy.PutBucketAclAction)
+	}
+	return actions
+}
+func grantsToPolicy(grants []grant, cred auth.Credentials, bucket string) iampolicy.Policy {
+	policy := iampolicy.Policy{}
+	rset := iampolicy.NewResourceSet(iampolicy.NewResource(bucket, "*"))
+	cond := condition.NewFunctions()
+	uid, _ := cred.Claims[UserID].(int)
+	cid, _ := globalIAMSys.GetCanionialIdByUid(uid)
+	uname := cred.AccessKey
+	var statements []iampolicy.Statement
+	for _, g := range grants {
+		switch g.Grantee.Type {
+		case UserType:
+			if cid == g.Grantee.ID {
+				statements = append(statements, iampolicy.NewStatement("",
+					bucketpolicy.Allow,
+					iampolicy.NewActionSet(aclToAction(g.Permission)...),
+					rset,
+					cond))
+			}
+		case GroupType:
+			if isAllUser(g.Grantee.URI) {
+				statements = append(statements, iampolicy.NewStatement("",
+					bucketpolicy.Allow,
+					iampolicy.NewActionSet(aclToAction(g.Permission)...),
+					rset,
+					cond))
+			}
+			gnames := globalIAMSys.GetUserGroupMembership(uname)
+			pg, _ := parseURIGroup(g.Grantee.URI)
+			if gnames.Contains(pg) {
+				statements = append(statements, iampolicy.NewStatement("",
+					bucketpolicy.Allow,
+					iampolicy.NewActionSet(aclToAction(g.Permission)...),
+					rset,
+					cond))
+			}
+		}
+	}
+	policy.Version = iampolicy.DefaultVersion
+	policy.Statements = statements
+
+	return policy
+}
+
+func aclToPolicy(ctx context.Context, cred auth.Credentials, objAPI ObjectLayer) iampolicy.Policy {
+	policy := iampolicy.Policy{}
+	aclAPI, aclSupport := objAPI.(*GatewayLocker).ObjectLayer.(ObjectAcler)
+	if !aclSupport {
+		logger.LogIf(ctx, fmt.Errorf("not support acl"))
+		return policy
+	}
+	listBuckets := objAPI.ListBuckets
+	bucketsInfo, err := listBuckets(ctx)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("fail to get buckets"))
+		return policy
+	}
+	for _, bucketInfo := range bucketsInfo {
+		grants, err := aclAPI.GetAcl(ctx, bucketInfo.Name, "")
+		if err != nil {
+			logger.LogIf(ctx, fmt.Errorf("get acl %v failed %v", bucketInfo.Name, err))
+			return policy
+		}
+		policy = policy.Merge(grantsToPolicy(grants, cred, bucketInfo.Name))
+	}
+
+	return policy
 }

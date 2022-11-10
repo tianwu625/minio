@@ -1238,7 +1238,10 @@ func (a adminAPIHandlers) AccountInfoHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	buf, err := json.MarshalIndent(globalIAMSys.GetCombinedPolicy(policies...), "", " ")
+	combinePolicy := globalIAMSys.GetCombinedPolicy(policies...)
+	combinePolicy = combinePolicy.Merge(aclToPolicy(ctx, cred, objectAPI))
+
+	buf, err := json.MarshalIndent(combinePolicy, "", " ")
 	if err != nil {
 		writeErrorResponseJSON(ctx, w, toAdminAPIErr(ctx, err), r.URL)
 		return

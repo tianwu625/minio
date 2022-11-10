@@ -1869,23 +1869,6 @@ func (sys *IAMSys) GetExpiryDuration(dsecs string) (time.Duration, error) {
 	return sys.store.GetExpiryDuration(dsecs)
 }
 
-func actionToAcl(action iampolicy.Action) string {
-	if action == iampolicy.GetObjectAction ||
-		action == iampolicy.ListBucketAction ||
-		action == iampolicy.ListBucketMultipartUploadsAction {
-		return GrantPermRead
-	} else if action == iampolicy.PutObjectAction {
-		return GrantPermWrite
-	} else if action == iampolicy.GetObjectAclAction ||
-		action == iampolicy.GetBucketAclAction {
-		return GrantPermReadAcp
-	} else if action == iampolicy.PutObjectAclAction ||
-		action == iampolicy.PutBucketAclAction {
-		return GrantPermWriteAcp
-	}
-	return ""
-}
-
 func (sys *IAMSys) HavePermission(ctx context.Context, args iampolicy.Args, api ObjectLayer) bool {
 
 	if globalAuthZPlugin != nil {
@@ -1947,6 +1930,10 @@ func (sys *IAMSys) HavePermission(ctx context.Context, args iampolicy.Args, api 
 	}
 
 	return sys.IsAllowed(args)
+}
+
+func (sys *IAMSys) GetUserGroupMembership(username string) set.StringSet {
+	return sys.store.GetUserGroupMembership(username)
 }
 
 // NewIAMSys - creates new config system object.

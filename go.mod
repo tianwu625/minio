@@ -225,7 +225,7 @@ require (
 )
 
 replace (
-	github.com/minio/console v0.17.2 => github.com/tianwu625/console v1.0.0
+	github.com/minio/console v0.17.2 => ../console
 	github.com/minio/madmin-go v1.3.14 => github.com/tianwu625/madmin-go v0.1.0
 	github.com/minio/mc v0.0.0-20220512134321-aa60a8db1e4d => github.com/tianwu625/mc v0.0.0-20221021021631-85867bf9f1cd
 	github.com/minio/minio-go/v7 v7.0.27 => github.com/tianwu625/minio-go/v7 v7.1.0
