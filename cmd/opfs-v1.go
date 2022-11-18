@@ -43,6 +43,7 @@ import (
 	"github.com/minio/minio/internal/lock"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/minio/internal/mountinfo"
+	"github.com/minio/minio/internal/opfs"
 	"github.com/minio/pkg/bucket/policy"
 	"github.com/minio/pkg/mimedb"
 )
@@ -1618,7 +1619,7 @@ func checkDirHaveOwnerPermission(ctx context.Context, dirPath string) bool {
 	}
 	opfsgrants, err := opfsGetAcl(dirPath)
 	for _, g := range opfsgrants {
-		if g.aclbits&AclDirFullControl == AclDirFullControl {
+		if g.aclbits&opfs.AclDirFullControl == opfs.AclDirFullControl {
 			if g.acltype == UserType && g.uid == uid {
 				return true
 			}
@@ -1671,7 +1672,7 @@ func (ofs *OPFSObjects) checkWritePermission(ctx context.Context, bucket, object
 	}
 	opfsgrants := make([]opfsAcl, 0, len(dirGrants)+len(bucketGrants))
 	for _, g := range dirGrants {
-		if g.aclbits&AclDirWrite == AclDirWrite {
+		if g.aclbits&opfs.AclDirWrite == opfs.AclDirWrite {
 			continue
 		}
 		opfsgrants = append(opfsgrants, g)
