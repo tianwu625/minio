@@ -57,7 +57,7 @@ const cok = C.int(0)
 func open(path string) (fd *C.ofapi_fd_t, err error) {
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
-	ret := C.ofapi_open(root.fs, cpath, &fd)
+	ret := C.ofapi_open(root.fs, cpath, 0, &fd)
 	if ret != cok {
 		return nil, opfsErr(ret)
 	}
