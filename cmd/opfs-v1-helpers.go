@@ -78,6 +78,13 @@ func opfsRemoveFile(ctx context.Context, filePath string) (err error) {
 	return nil
 }
 
+func opfsRemoveDirWithCred(ctx context.Context, dirPath string) (err error) {
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+	return opfsRemoveDir(ctx, dirPath)
+}
+
 func opfsRemoveDir(ctx context.Context, dirPath string) (err error) {
 	if dirPath == "" {
 		logger.LogIf(ctx, errInvalidArgument)
@@ -86,10 +93,6 @@ func opfsRemoveDir(ctx context.Context, dirPath string) (err error) {
 
 	if err = checkPathLength(dirPath); err != nil {
 		logger.LogIf(ctx, err)
-		return err
-	}
-
-	if err := setUserCred(ctx); err != nil {
 		return err
 	}
 
@@ -105,6 +108,14 @@ func opfsRemoveDir(ctx context.Context, dirPath string) (err error) {
 	return nil
 }
 
+func opfsRemoveAllWithCred(ctx context.Context, dirPath string) (err error) {
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+
+	return opfsRemoveAll(ctx, dirPath)
+}
+
 func opfsRemoveAll(ctx context.Context, dirPath string) (err error) {
 	if dirPath == "" {
 		logger.LogIf(ctx, errInvalidArgument)
@@ -116,10 +127,14 @@ func opfsRemoveAll(ctx context.Context, dirPath string) (err error) {
 		return err
 	}
 
-	if err := setUserCred(ctx); err != nil {
-		return err
-	}
 	return opfsRemoveAllPath(dirPath)
+}
+
+func opfsReadDirWithCred(ctx context.Context, dirPath string, opts readDirOpts) (entries []string, err error) {
+	if err := setUserCred(ctx); err != nil {
+		return entries, err
+	}
+	return opfsReadDirWithOpts(dirPath, opts)
 }
 
 func opfsReadDirWithOpts(dirPath string, opts readDirOpts) (entries []string, err error) {
@@ -149,15 +164,20 @@ func opfsStat(ctx context.Context, statLoc string) (os.FileInfo, error) {
 		logger.LogIf(ctx, err)
 		return nil, err
 	}
-	if err := setUserCred(ctx); err != nil {
-		return nil, err
-	}
 	ofi, err := opfs.Stat(statLoc)
 	if err != nil {
 		return nil, err
 	}
 
 	return ofi, nil
+}
+
+func opfsStatVolumeWithCred(ctx context.Context, volume string) (os.FileInfo, error) {
+	if err := setUserCred(ctx); err != nil {
+		return nil, err
+	}
+
+	return opfsStatVolume(ctx, volume)
 }
 
 func opfsStatVolume(ctx context.Context, volume string) (os.FileInfo, error) {
@@ -179,6 +199,14 @@ func opfsStatVolume(ctx context.Context, volume string) (os.FileInfo, error) {
 	return ofi, nil
 }
 
+func opfsStatDirWithCred(ctx context.Context, statDir string) (os.FileInfo, error) {
+	if err := setUserCred(ctx); err != nil {
+		return nil, err
+	}
+
+	return opfsStatDir(ctx, statDir)
+}
+
 func opfsStatDir(ctx context.Context, statDir string) (os.FileInfo, error) {
 	ofi, err := opfsStat(ctx, statDir)
 	if err != nil {
@@ -190,6 +218,13 @@ func opfsStatDir(ctx context.Context, statDir string) (os.FileInfo, error) {
 	}
 
 	return ofi, nil
+}
+
+func opfsStatFileWithCred(ctx context.Context, statFile string) (os.FileInfo, error) {
+	if err := setUserCred(ctx); err != nil {
+		return nil, err
+	}
+	return opfsStatFile(ctx, statFile)
 }
 
 func opfsStatFile(ctx context.Context, statFile string) (os.FileInfo, error) {
@@ -225,13 +260,6 @@ func opfsRenameFile(ctx context.Context, sourcePath, destPath string) error {
 		return errInvalidArgument
 	}
 
-	if err := checkPathLength(sourcePath); err != nil {
-		return err
-	}
-	if err := checkPathLength(destPath); err != nil {
-		return err
-	}
-
 	if err := opfsMkdirAll(pathutil.Dir(destPath), 0777); err != nil {
 		return err
 	}
@@ -251,6 +279,13 @@ func opfsRenameFileWithCred(ctx context.Context, sourcePath, destPath string) er
 	return opfsRenameFile(ctx, sourcePath, destPath)
 }
 
+func opfsCreateFileWithCred(ctx context.Context, filePath string, reader io.Reader, fallocSize int64) (int64, error) {
+	if err := setUserCred(ctx); err != nil {
+		return 0, err
+	}
+	return opfsCreateFile(ctx, filePath, reader, fallocSize)
+}
+
 // Creates a file and copies data from incoming reader.
 func opfsCreateFile(ctx context.Context, filePath string, reader io.Reader, fallocSize int64) (int64, error) {
 	if filePath == "" || reader == nil {
@@ -260,10 +295,6 @@ func opfsCreateFile(ctx context.Context, filePath string, reader io.Reader, fall
 
 	if err := checkPathLength(filePath); err != nil {
 		logger.LogIf(ctx, err)
-		return 0, err
-	}
-
-	if err := setUserCred(ctx); err != nil {
 		return 0, err
 	}
 
@@ -311,6 +342,14 @@ func opfsReadDir(dirPath string) (entries []string, err error) {
 	return opfsReadDirWithOpts(dirPath, readDirOpts{count: -1})
 }
 
+func opfsTouchWithCred(ctx context.Context, statLoc string) error {
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+
+	return opfsTouch(ctx, statLoc)
+}
+
 func opfsTouch(ctx context.Context, statLoc string) error {
 	if statLoc == "" {
 		logger.LogIf(ctx, errInvalidArgument)
@@ -320,11 +359,6 @@ func opfsTouch(ctx context.Context, statLoc string) error {
 		logger.LogIf(ctx, err)
 		return err
 	}
-
-	if err := setUserCred(ctx); err != nil {
-		return err
-	}
-
 	now := time.Now()
 	if err := opfs.Utime(statLoc, now); err != nil {
 		return err
@@ -352,17 +386,20 @@ func opfsReadFile(name string) ([]byte, error) {
 
 	return p, err
 }
+
+func opfsOpenFileWithCred(ctx context.Context, readPath string, offset int64) (io.ReadCloser, int64, error) {
+	if err := setUserCred(ctx); err != nil {
+		logger.LogIf(ctx, err)
+		return nil, 0, err
+	}
+	return opfsOpenFile(ctx, readPath, offset)
+}
 func opfsOpenFile(ctx context.Context, readPath string, offset int64) (io.ReadCloser, int64, error) {
 	if readPath == "" || offset < 0 {
 		logger.LogIf(ctx, errInvalidArgument)
 		return nil, 0, errInvalidArgument
 	}
 	if err := checkPathLength(readPath); err != nil {
-		logger.LogIf(ctx, err)
-		return nil, 0, err
-	}
-
-	if err := setUserCred(ctx); err != nil {
 		logger.LogIf(ctx, err)
 		return nil, 0, err
 	}
@@ -860,6 +897,13 @@ func inGroups(gid int, gids []int) bool {
 
 func opfsMkdirAll(path string, perm os.FileMode) error {
 	return opfs.MakeDirAll(path, perm)
+}
+
+func opfsRenameWithCred(ctx context.Context, src, dst string) error {
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+	return opfsRename(src, dst)
 }
 
 func opfsRename(src, dst string) error {

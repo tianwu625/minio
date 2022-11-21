@@ -289,7 +289,9 @@ func (ofs *OPFSObjects) MakeBucketWithLocation(ctx context.Context, bucket strin
 //access managememt of policy is processed by minio itself
 
 // GetBucketPolicy - only needed for FS in NAS mode
+// FIXME no permission check in fs and minio check permission
 func (ofs *OPFSObjects) GetBucketPolicy(ctx context.Context, bucket string) (*policy.Policy, error) {
+	ctx = newOpfsRoot(ctx)
 	meta, err := loadBucketMetadata(ctx, ofs, bucket)
 	if err != nil {
 		return nil, BucketPolicyNotFound{Bucket: bucket}
@@ -301,7 +303,9 @@ func (ofs *OPFSObjects) GetBucketPolicy(ctx context.Context, bucket string) (*po
 }
 
 // SetBucketPolicy - only needed for FS in NAS mode
+// FIXME no permission check in fs and minio check permission
 func (ofs *OPFSObjects) SetBucketPolicy(ctx context.Context, bucket string, p *policy.Policy) error {
+	ctx = newOpfsRoot(ctx)
 	meta, err := loadBucketMetadata(ctx, ofs, bucket)
 	if err != nil {
 		return err
@@ -318,7 +322,9 @@ func (ofs *OPFSObjects) SetBucketPolicy(ctx context.Context, bucket string, p *p
 }
 
 // DeleteBucketPolicy - only needed for FS in NAS mode
+// FIXME no permission check in fs and minio check permission
 func (ofs *OPFSObjects) DeleteBucketPolicy(ctx context.Context, bucket string) error {
+	ctx = newOpfsRoot(ctx)
 	meta, err := loadBucketMetadata(ctx, ofs, bucket)
 	if err != nil {
 		return err
@@ -328,6 +334,7 @@ func (ofs *OPFSObjects) DeleteBucketPolicy(ctx context.Context, bucket string) e
 }
 
 // GetBucketInfo - fetch bucket metadata info.
+// FIXME no permission check
 func (ofs *OPFSObjects) GetBucketInfo(ctx context.Context, bucket string) (bi BucketInfo, e error) {
 	st, err := ofs.statBucketDir(ctx, bucket)
 	if err != nil {
@@ -354,8 +361,9 @@ func (ofs *OPFSObjects) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 		return nil, err
 	}
 
-	setOpfsSessionRoot()
-	entries, err := opfsReadDirWithOpts(pathJoin(ofs.fsPath, SlashSeparator), readDirOpts{count: -1, followDirSymlink: true})
+	rootCtx := newOpfsRoot(ctx)
+	entries, err := opfsReadDirWithCred(rootCtx, pathJoin(ofs.fsPath, SlashSeparator),
+		readDirOpts{count: -1, followDirSymlink: true})
 	if err != nil {
 		logger.LogIf(ctx, errDiskNotFound)
 		return nil, toObjectErr(errDiskNotFound)
@@ -410,24 +418,24 @@ func (ofs *OPFSObjects) DeleteBucket(ctx context.Context, bucket string, opts De
 
 	if !opts.Force {
 		// Attempt to delete regular bucket.
-		if err = opfsRemoveDir(ctx, bucketDir); err != nil {
+		if err = opfsRemoveDirWithCred(ctx, bucketDir); err != nil {
 			return toObjectErr(err, bucket)
 		}
 	} else {
 		tmpBucketPath := pathJoin(ofs.fsPath, minioMetaTmpBucket, bucket+"."+mustGetUUID())
-		if err = opfsRename(bucketDir, tmpBucketPath); err != nil {
+		if err = opfsRenameWithCred(ctx, bucketDir, tmpBucketPath); err != nil {
 			return toObjectErr(err, bucket)
 		}
 
 		go func() {
-			opfsRemoveAll(ctx, tmpBucketPath) // ignore returned error if any.
+			opfsRemoveAllWithCred(ctx, tmpBucketPath) // ignore returned error if any.
 		}()
 	}
 
 	// Cleanup all the bucket metadata.
 	ctx = newOpfsRoot(ctx)
 	minioMetadataBucketDir := pathJoin(ofs.fsPath, minioMetaBucket, bucketMetaPrefix, bucket)
-	if err = opfsRemoveAll(ctx, minioMetadataBucketDir); err != nil {
+	if err = opfsRemoveAllWithCred(ctx, minioMetadataBucketDir); err != nil {
 		return toObjectErr(err, bucket)
 	}
 
@@ -498,12 +506,12 @@ func (ofs *OPFSObjects) CopyObject(ctx context.Context, srcBucket, srcObject, ds
 		fsObjectPath := pathJoin(ofs.fsPath, srcBucket, srcObject)
 
 		// Update object modtime
-		err = opfsTouch(ctx, fsObjectPath)
+		err = opfsTouchWithCred(ctx, fsObjectPath)
 		if err != nil {
 			return oi, toObjectErr(err, srcBucket, srcObject)
 		}
 		// Stat the file to get object info
-		fi, err := opfsStatFile(ctx, fsObjectPath)
+		fi, err := opfsStatFileWithCred(ctx, fsObjectPath)
 		if err != nil {
 			return oi, toObjectErr(err, srcBucket, srcObject)
 		}
@@ -761,7 +769,8 @@ func (ofs *OPFSObjects) getObjectInfo(ctx context.Context, bucket, object string
 
 	// Stat the file to get file size.
 	// process access manage for opfsStatFile at least read privilege and attribute read privilege
-	fi, err := opfsStatFile(ctx, pathJoin(ofs.fsPath, bucket, object))
+	// only here check permission
+	fi, err := opfsStatFileWithCred(ctx, pathJoin(ofs.fsPath, bucket, object))
 	if err != nil {
 		return oi, err
 	}
@@ -1061,7 +1070,10 @@ func (ofs *OPFSObjects) DeleteObject(ctx context.Context, bucket, object string,
 			return objInfo, toObjectErr(err, bucket, object)
 		}
 	}
-
+	//if minioMetaBucket skip permission check
+	if bucket == minioMetaBucket {
+		ctx = newOpfsRoot(ctx)
+	}
 	// Delete the object.
 	if err = opfsDeleteFile(ctx, pathJoin(ofs.fsPath, bucket), pathJoin(ofs.fsPath, bucket, object)); err != nil {
 		if rwlk != nil {
@@ -1122,6 +1134,7 @@ func (ofs *OPFSObjects) listDirFactory() ListDirFunc {
 // and the prefix represents an empty directory. An S3 empty directory
 // is also an empty directory in the FS backend.
 func (ofs *OPFSObjects) isObjectDir(bucket, prefix string) bool {
+	setOpfsSessionRoot()
 	entries, err := opfsReadDirN(pathJoin(ofs.fsPath, bucket, prefix), 1)
 	if err != nil {
 		return false
@@ -1142,6 +1155,10 @@ func (ofs *OPFSObjects) ListObjects(ctx context.Context, bucket, prefix, marker,
 	// In that case we retry the operation, but we add a
 	// max limit, so we never end up in an infinite loop.
 	tries := 50
+	//do set setUsersed
+	if err := setUserCred(ctx); err != nil {
+		return loi, err
+	}
 	for {
 		loi, err = listObjects(ctx, ofs, bucket, prefix, marker, delimiter, maxKeys, ofs.listPool,
 			ofs.listDirFactory(), ofs.isLeaf, ofs.isLeafDir, ofs.getObjectInfoNoFSLock, ofs.getObjectInfoNoFSLock)
@@ -1165,6 +1182,7 @@ func (ofs *OPFSObjects) GetObjectTags(ctx context.Context, bucket, object string
 			VersionID: opts.VersionID,
 		}
 	}
+	ctx = newOpfsRoot(ctx)
 	oi, err := ofs.GetObjectInfo(ctx, bucket, object, ObjectOptions{})
 	if err != nil {
 		return nil, err
@@ -1182,6 +1200,7 @@ func (ofs *OPFSObjects) PutObjectTags(ctx context.Context, bucket, object string
 			VersionID: opts.VersionID,
 		}
 	}
+	ctx = newOpfsRoot(ctx)
 
 	fsMetaPath := pathJoin(ofs.fsPath, minioMetaBucket, bucketMetaPrefix, bucket, object, ofs.metaJSONFile)
 	fsMeta := fsMetaV1{}
@@ -1253,6 +1272,9 @@ func (ofs *OPFSObjects) HealBucket(ctx context.Context, bucket string, opts madm
 // error walker returns error. Optionally if context.Done() is received
 // then Walk() stops the walker.
 func (ofs *OPFSObjects) Walk(ctx context.Context, bucket, prefix string, results chan<- ObjectInfo, opts ObjectOptions) error {
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
 	return fsWalk(ctx, ofs, bucket, prefix, ofs.listDirFactory(), ofs.isLeaf, ofs.isLeafDir, results, ofs.getObjectInfoNoFSLock, ofs.getObjectInfoNoFSLock)
 }
 
@@ -1317,6 +1339,7 @@ func (ofs *OPFSObjects) IsTaggingSupported() bool {
 
 // Health returns health of the object layer
 func (ofs *OPFSObjects) Health(ctx context.Context, opts HealthOptions) HealthResult {
+	setOpfsSessionRoot()
 	if _, err := opfsStatPath(ofs.fsPath); err != nil {
 		return HealthResult{}
 	}
@@ -1381,7 +1404,8 @@ func (ofs *OPFSObjects) SetAcl(ctx context.Context, bucket, object string, grant
 	} else {
 		path = filepath.Join(ofs.fsPath, bucket, object)
 	}
-
+	//do info should have permission
+	setOpfsSessionRoot()
 	info, err := opfsStatPath(path)
 	if err != nil {
 		return err
@@ -1445,6 +1469,8 @@ func (ofs *OPFSObjects) GetAcl(ctx context.Context, bucket, object string) ([]gr
 	} else {
 		path = filepath.Join(ofs.fsPath, bucket, object)
 	}
+	//info should have permission
+	setOpfsSessionRoot()
 	info, err := opfsStatPath(path)
 	if err != nil {
 		return nil, err
