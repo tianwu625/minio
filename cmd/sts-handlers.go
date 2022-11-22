@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/minio/madmin-go"
 	"github.com/minio/minio/internal/auth"
 	"github.com/minio/minio/internal/config/identity/openid"
@@ -39,7 +40,6 @@ import (
 	"github.com/minio/minio/internal/logger"
 	iampolicy "github.com/minio/pkg/iam/policy"
 	"github.com/minio/pkg/wildcard"
-	"github.com/msteinert/pam"
 )
 
 const (
@@ -615,7 +615,7 @@ func (sts *stsAPIHandlers) AssumeRoleWithLDAPIdentity(w http.ResponseWriter, r *
 			return
 		}
 	*/
-	if err := checkAuthValid(ldapUsername, ldapPassword); err != nil {
+	if _, err := checkAuthValid(ldapUsername, ldapPassword); err != nil {
 		writeSTSErrorResponse(ctx, w, true, ErrSTSInvalidParameterValue, err)
 		return
 	}
@@ -967,31 +967,29 @@ func (sts *stsAPIHandlers) AssumeRoleWithCustomToken(w http.ResponseWriter, r *h
 	writeSuccessResponseXML(w, encodeResponse(response))
 }
 
-func checkAuthValid(username, passwd string) error {
+const (
+	OpfsAuthCmd = "/openfs-authenticate"
+)
+
+type authRes struct {
+	Message  string `json:"message"`
+	AuthType string `json:"type"`
+	Ret      int    `json:"ret"`
+}
+
+func checkAuthValid(username, passwd string) (dom string, err error) {
 	if username == globalActiveCred.AccessKey && passwd == globalActiveCred.SecretKey {
-		return nil
+		return "Local", nil
 	}
 	//FIXME update winbind link
-	c := exec.Command("wbinfo", "-t")
-	c.CombinedOutput()
-	t, err := pam.StartFunc("openfs-minio", username, func(s pam.Style, msg string) (string, error) {
-		switch s {
-		case pam.PromptEchoOff:
-			return passwd, nil
-		case pam.PromptEchoOn, pam.ErrorMsg, pam.TextInfo:
-			return "", nil
-		default:
-			return "", errors.New("unrecognized message style")
-		}
-	})
-	if err != nil {
-		logger.LogIf(nil, fmt.Errorf("start pam failed %v", err))
-		return err
+	cmdPath := OpfsCmdDir + OpfsAuthCmd
+	c := exec.Command(cmdPath, username, passwd)
+	output, _ := c.CombinedOutput()
+	json := jsoniter.ConfigCompatibleWithStandardLibrary
+	var authres authRes
+	json.Unmarshal(output, &authres)
+	if authres.Ret != 0 {
+		return "", fmt.Errorf(authres.Message)
 	}
-	err = t.Authenticate(0)
-	if err != nil {
-		logger.LogIf(nil, fmt.Errorf("auth failed %v", err))
-		return err
-	}
-	return nil
+	return authres.AuthType, nil
 }
