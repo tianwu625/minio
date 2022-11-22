@@ -2018,15 +2018,20 @@ func (store *IAMStoreSys) LoadUser(ctx context.Context, accessKey string) {
 			store.loadUser(ctx, accessKey, svcUser, cache.iamUsersMap)
 			if svc, found := cache.iamUsersMap[accessKey]; found {
 				// Load parent user and mapped policies.
-				if store.getUsersSysType() == MinIOUsersSysType {
+				if store.getUsersSysType() == MinIOUsersSysType ||
+					store.getUsersSysType() == OPFSUsersSysType {
 					store.loadUser(ctx, svc.ParentUser, regUser, cache.iamUsersMap)
 				}
 				store.loadMappedPolicy(ctx, svc.ParentUser, regUser, false, cache.iamUserPolicyMap)
 			} else {
 				// check for STS account
 				store.loadUser(ctx, accessKey, stsUser, cache.iamUsersMap)
-				if _, found = cache.iamUsersMap[accessKey]; found {
+				if sts, found := cache.iamUsersMap[accessKey]; found {
 					// Load mapped policy
+					if store.getUsersSysType() == MinIOUsersSysType ||
+						store.getUsersSysType() == OPFSUsersSysType {
+						store.loadUser(ctx, sts.ParentUser, regUser, cache.iamUsersMap)
+					}
 					store.loadMappedPolicy(ctx, accessKey, stsUser, false, cache.iamUserPolicyMap)
 				}
 			}

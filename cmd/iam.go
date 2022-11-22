@@ -777,6 +777,8 @@ func (sys *IAMSys) ListUsers(ctx context.Context) (map[string]madmin.UserInfo, e
 	if !sys.Initialized() {
 		return nil, errServerNotInitialized
 	}
+	//update users
+	sys.Load(ctx)
 	select {
 	case <-sys.configLoaded:
 		return sys.store.GetUsers(), nil
