@@ -222,7 +222,7 @@ func createUserIdentityfromOPFS(u OpfsUser) (*auth.Credentials, error) {
 }
 
 func createGroupInfoOPFS(g OpfsGroup) *GroupInfo {
-	var members []string
+	members := []string{}
 
 	for _, u := range g.Users {
 		members = append(members, u.Name)
