@@ -1120,6 +1120,26 @@ func (a adminAPIHandlers) DeleteServiceAccount(w http.ResponseWriter, r *http.Re
 	writeSuccessNoContent(w)
 }
 
+func getSizeAndCountOfBucket(ctx context.Context, api ObjectLayer, bucket string) (size uint64, count uint64, err error) {
+	token := ""
+	del := SlashSeparator
+	for {
+		v2info, err := api.ListObjectsV2(ctx, bucket, "", token, del, 1024, false, "")
+		for _, oi := range v2info.Objects {
+			size += uint64(oi.Size)
+		}
+		count += uint64(len(v2info.Objects))
+		if err != nil && !errors.Is(err, io.EOF) {
+			return size, count, err
+		}
+		if !v2info.IsTruncated || errors.Is(err, io.EOF) {
+			break
+		}
+		token = v2info.NextContinuationToken
+	}
+	return size, count, nil
+}
+
 // AccountInfoHandler returns usage
 func (a adminAPIHandlers) AccountInfoHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := newContext(r, w, "AccountInfo")
@@ -1264,6 +1284,8 @@ func (a adminAPIHandlers) AccountInfoHandler(w http.ResponseWriter, r *http.Requ
 				size = dataUsageInfo.BucketsUsage[bucket.Name].Size
 				objectsCount = dataUsageInfo.BucketsUsage[bucket.Name].ObjectsCount
 				objectsHist = dataUsageInfo.BucketsUsage[bucket.Name].ObjectSizesHistogram
+			} else {
+				size, objectsCount, _ = getSizeAndCountOfBucket(ctx, objectAPI, bucket.Name)
 			}
 			// Fetch the prefix usage of the current bucket
 			var prefixUsage map[string]uint64
