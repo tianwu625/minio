@@ -980,7 +980,6 @@ func (sys *IAMSys) NewServiceAccount(ctx context.Context, parentUser string, gro
 	cred.ParentUser = parentUser
 	cred.Groups = groups
 	cred.Status = string(auth.AccountOn)
-	logger.Info("cred time %v", cred.Expiration.String())
 
 	err = sys.store.AddServiceAccount(ctx, cred)
 	if err != nil {

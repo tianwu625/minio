@@ -19,6 +19,7 @@ package cmd
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -242,7 +243,9 @@ func (api objectAPIHandlers) PutBucketACLHandler(w http.ResponseWriter, r *http.
 		}
 
 		if err := aclAPI.SetAcl(ctx, bucket, "", acl.AccessControlList.Grants); err != nil {
-			logger.LogIf(ctx, fmt.Errorf("objAPI set fail, err=%v", err))
+			if !errors.Is(err, errAuthentication) {
+				logger.LogIf(ctx, fmt.Errorf("objAPI set fail, err=%v", err))
+			}
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		}
 		return
@@ -319,7 +322,9 @@ func (api objectAPIHandlers) GetBucketACLHandler(w http.ResponseWriter, r *http.
 		var grants []grant
 		grants, err := aclAPI.GetAcl(ctx, bucket, "")
 		if err != nil {
-			logger.LogIf(ctx, fmt.Errorf("get acl failed err %v", err))
+			if !errors.Is(err, errAuthentication) {
+				logger.LogIf(ctx, fmt.Errorf("get acl failed err %v", err))
+			}
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 			return
 		}
@@ -432,7 +437,9 @@ func (api objectAPIHandlers) PutObjectACLHandler(w http.ResponseWriter, r *http.
 		}
 
 		if err := aclAPI.SetAcl(ctx, bucket, object, acl.AccessControlList.Grants); err != nil {
-			logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
+			if !errors.Is(err, errAuthentication) {
+				logger.LogIf(ctx, fmt.Errorf("set acl failed %v", err))
+			}
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 			return
 		}
@@ -514,7 +521,11 @@ func (api objectAPIHandlers) GetObjectACLHandler(w http.ResponseWriter, r *http.
 		var grants []grant
 		grants, err := aclAPI.GetAcl(ctx, bucket, object)
 		if err != nil {
+			if !errors.Is(err, errAuthentication) {
+				logger.LogIf(ctx, fmt.Errorf("get acl failed err %v", err))
+			}
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+			return
 		}
 		acle.XMLName = xml.Name{
 			Space: "xmlns",
@@ -545,14 +556,14 @@ func grantsToEncode(grants []grant) []grantEncode {
 	return ge
 }
 
-func EncodeTogrants(ge []grantEncode) []grant {
+func DecodeTogrants(gd []grantDecode) []grant {
 	var g []grant
 
-	ehdr := (*reflect.SliceHeader)(unsafe.Pointer(&ge))
+	dhdr := (*reflect.SliceHeader)(unsafe.Pointer(&gd))
 	hdr := (*reflect.SliceHeader)(unsafe.Pointer(&g))
-	hdr.Data = ehdr.Data
-	hdr.Len = ehdr.Len
-	hdr.Cap = ehdr.Cap
+	hdr.Data = dhdr.Data
+	hdr.Len = dhdr.Len
+	hdr.Cap = dhdr.Cap
 
 	return g
 }

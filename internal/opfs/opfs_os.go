@@ -90,7 +90,7 @@ var _zero uintptr
 
 func (opf *OpfsFile) Write(p []byte) (n int, err error) {
 	if opf.flags&syscall.O_ACCMODE != os.O_WRONLY && opf.flags&syscall.O_ACCMODE != os.O_RDWR {
-		logger.LogIf(nil, errors.New(fmt.Sprintf("flags=%x", opf.flags)))
+		logger.LogIf(nil, fmt.Errorf("flags=%v", opf.flags))
 		return 0, os.ErrPermission
 	}
 	var cbuffer unsafe.Pointer
@@ -102,19 +102,19 @@ func (opf *OpfsFile) Write(p []byte) (n int, err error) {
 	opf.mutex.Lock()
 	defer opf.mutex.Unlock()
 	ret := C.ofapi_write(opf.fd, C.uint64_t(opf.offset), cbuffer, C.uint32_t(len(p)))
-	if ret < C.int(0) {
-		logger.LogIf(nil, errors.New(fmt.Sprintf("write len %d offset %ld, ret=%d", len(p), opf.offset, int(ret))))
-		return 0, os.ErrInvalid
+	if ret < cok {
+		if !errors.Is(opfsErr(ret), os.ErrNotExist) {
+			logger.LogIf(nil, fmt.Errorf("write len %v offset %v, ret=%v", len(p), opf.offset, opfsErr(ret)))
+		}
+		return 0, opfsErr(ret)
 	}
 	opf.offset += int64(ret)
 	return int(ret), nil
 }
 
 func (opf *OpfsFile) Read(p []byte) (n int, err error) {
-
-	//logger.Info("inlock opf %p read file %s len %d fd %p", opf, opf.name, len(p), unsafe.Pointer(opf.fd))
 	if opf.flags&syscall.O_ACCMODE != os.O_RDONLY && opf.flags&syscall.O_ACCMODE != os.O_RDWR {
-		logger.LogIf(nil, errors.New(fmt.Sprintf("flags=%x", opf.flags)))
+		logger.LogIf(nil, fmt.Errorf("flags=%v", opf.flags))
 		return 0, os.ErrPermission
 	}
 
@@ -128,9 +128,11 @@ func (opf *OpfsFile) Read(p []byte) (n int, err error) {
 	opf.mutex.Lock()
 	defer opf.mutex.Unlock()
 	ret := C.ofapi_read(opf.fd, C.uint64_t(opf.offset), cbuffer, C.uint32_t(len(p)))
-	if ret < C.int(0) {
-		logger.LogIf(nil, errors.New(fmt.Sprintf("read len %d offset %ld, ret=%d", len(p), opf.offset, int(ret))))
-		return 0, os.ErrInvalid
+	if ret < cok {
+		if !errors.Is(opfsErr(ret), os.ErrNotExist) && !errors.Is(opfsErr(ret), syscall.EACCES) {
+			logger.LogIf(nil, fmt.Errorf("read len %v offset %v, ret=%v", len(p), opf.offset, opfsErr(ret)))
+		}
+		return 0, opfsErr(ret)
 	}
 	opf.offset += int64(ret)
 
@@ -145,7 +147,7 @@ func (opf *OpfsFile) ReadAt(p []byte, off int64) (n int, err error) {
 
 	//logger.Info("in lock opf %p read file %s len %d fd %p", opf, opf.name, len(p), unsafe.Pointer(opf.fd))
 	if opf.flags&syscall.O_ACCMODE != os.O_RDONLY && opf.flags&syscall.O_ACCMODE != os.O_RDWR {
-		logger.LogIf(nil, errors.New(fmt.Sprintf("flags=%x", opf.flags)))
+		logger.LogIf(nil, fmt.Errorf("flags=%v", opf.flags))
 		return 0, os.ErrPermission
 	}
 
@@ -157,8 +159,8 @@ func (opf *OpfsFile) ReadAt(p []byte, off int64) (n int, err error) {
 	}
 
 	ret := C.ofapi_read(opf.fd, C.uint64_t(off), cbuffer, C.uint32_t(len(p)))
-	if ret < C.int(0) {
-		logger.LogIf(nil, errors.New(fmt.Sprintf("read len %d offset %ld, ret=%d", len(p), opf.offset, int(ret))))
+	if ret < cok {
+		logger.LogIf(nil, fmt.Errorf("read len %v offset %v, ret=%v", len(p), opf.offset, int(ret)))
 		return 0, os.ErrInvalid
 	}
 
@@ -176,8 +178,8 @@ func (opf *OpfsFile) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekEnd:
 		var oatt C.struct_oatt
 		ret := C.ofapi_getattr(opf.fd, &oatt)
-		if ret != C.int(0) {
-			return 0, syscall.Errno(int(-ret))
+		if ret != cok{
+			return 0, opfsErr(ret)
 		}
 		opf.offset = int64(oatt.oa_size) + offset
 	}
@@ -196,15 +198,15 @@ func (opf *OpfsFile) Stat() (os.FileInfo, error) {
 	ofi.name = opf.name
 	ret := C.ofapi_getattr(opf.fd, &ofi.stat)
 	if ret != cok {
-		return nil, os.ErrInvalid
+		return nil, opfsErr(ret)
 	}
 	return ofi, nil
 }
 
 func (opf *OpfsFile) Truncate(size int64) error {
 	ret := C.ofapi_truncate(opf.fd, C.uint64_t(size))
-	if ret != C.int(0) {
-		return os.ErrInvalid
+	if ret != cok {
+		return opfsErr(ret)
 	}
 	return nil
 }

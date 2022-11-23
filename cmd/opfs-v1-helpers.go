@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -37,7 +38,7 @@ func opfsMkdir(ctx context.Context, dirPath string) (err error) {
 		return err
 	}
 
-	if err = opfs.MakeDir(dirPath); err != nil {
+	if err = opfs.MakeDir(dirPath, 0o700); err != nil {
 		switch {
 		case osIsExist(err):
 			return errVolumeExists
@@ -389,7 +390,6 @@ func opfsReadFile(name string) ([]byte, error) {
 
 func opfsOpenFileWithCred(ctx context.Context, readPath string, offset int64) (io.ReadCloser, int64, error) {
 	if err := setUserCred(ctx); err != nil {
-		logger.LogIf(ctx, err)
 		return nil, 0, err
 	}
 	return opfsOpenFile(ctx, readPath, offset)
@@ -440,6 +440,13 @@ func opfsOpenFile(ctx context.Context, readPath string, offset int64) (io.ReadCl
 	return fr, st.Size(), nil
 }
 
+func opfsAppendFileWithCred(ctx context.Context, dst, src string, osync bool) error {
+	if err := setUserCred(ctx); err != nil {
+		return err
+	}
+	return opfsAppendFile(dst, src, osync)
+}
+
 func opfsAppendFile(dst string, src string, osync bool) error {
 	flags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
 	if osync {
@@ -447,12 +454,16 @@ func opfsAppendFile(dst string, src string, osync bool) error {
 	}
 	appendFile, err := opfs.OpenWithCreate(dst, flags, 0o666)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logger.LogIf(nil, fmt.Errorf("dst %v err %v", dst, err))
+		}
 		return err
 	}
 	defer appendFile.Close()
 
 	srcFile, err := opfs.Open(src)
 	if err != nil {
+		logger.LogIf(nil, fmt.Errorf("src %v err %v", src, err))
 		return err
 	}
 	defer srcFile.Close()
@@ -853,7 +864,9 @@ func opfsGetAclWithCred(ctx context.Context, path string) ([]opfsAcl, error) {
 	}
 	opfsgrants, err := opfsGetAcl(path)
 	if err != nil {
-		logger.LogIf(ctx, fmt.Errorf("get acl from path %v failed %v", path, err))
+		if !errors.Is(err, syscall.EACCES) {
+			logger.LogIf(ctx, fmt.Errorf("get acl from path %v failed %v", path, err))
+		}
 		return opfsgrants, err
 	}
 

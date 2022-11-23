@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/Azure/azure-storage-blob-go/azblob"
 	"google.golang.org/api/googleapi"
@@ -1904,6 +1905,8 @@ func toAPIErrorCode(ctx context.Context, err error) (apiErr APIErrorCode) {
 		apiErr = ErrAdminInvalidSecretKey
 	case errInvalidStorageClass:
 		apiErr = ErrInvalidStorageClass
+	case syscall.EACCES:
+		apiErr = ErrAccessDenied // no access without correct key
 	// SSE errors
 	case errInvalidEncryptionParameters:
 		apiErr = ErrInvalidEncryptionParameters

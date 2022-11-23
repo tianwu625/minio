@@ -94,7 +94,10 @@ func OpenWithCreate(path string, flag int, perm os.FileMode) (*OpfsFile, error) 
 			}
 			fd, err = open(path)
 			if err != nil {
-				logger.LogIf(nil, fmt.Errorf("seconde open failed flags=%x, perm=%v, path=%s", flag, perm, path))
+				if !errors.Is(err, os.ErrNotExist) {
+					logger.LogIf(nil, fmt.Errorf("second open failed flags=%x, perm=%v, path=%s", flag,
+					                  perm, path))
+				}
 				return nil, err
 			}
 		} else {
@@ -135,10 +138,10 @@ func SetCred(uid int, gids []int) error {
 
 const (
 	SlashSeparator = "/"
-	defaultPerm    = 0777
+	defaultPerm    = 0700
 )
 
-func MakeDir(path string) error {
+func MakeDir(path string, perm os.FileMode) error {
 	dir, name := filepath.Split(strings.TrimSuffix(path, SlashSeparator))
 	pfd, err := open(dir)
 	if err != nil {
@@ -148,7 +151,7 @@ func MakeDir(path string) error {
 	defer C.ofapi_close(pfd)
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
-	ret := C.ofapi_mkdirat(pfd, cname, defaultPerm)
+	ret := C.ofapi_mkdirat(pfd, cname, C.uint32_t(perm))
 	if ret != cok {
 		if !errors.Is(opfsErr(ret), os.ErrExist) {
 			logger.LogIf(nil, fmt.Errorf("MakeDir dir %v name %v fail err %v", dir, name, opfsErr(ret)))
@@ -411,9 +414,11 @@ func SetAcl(path string, grants []AclGrant) error {
 		logger.LogIf(nil, fmt.Errorf("SetAcl open %v fail err %v", path, err))
 		return err
 	}
-	ret = C.ofapi_setattr(fd, C.uint32_t(0), C.uint32_t(0), C.uint32_t(0), aid)
+	ret = C.ofapi_setattr(fd, C.uint32_t(C.OFAPI_UID_INVAL), C.uint32_t(C.OFAPI_GID_INVAL), C.uint32_t(C.OFAPI_MOD_INVAL), aid)
 	if ret != cok {
-		logger.LogIf(nil, fmt.Errorf("SetAcl setattr %v fail err %v", path, err))
+		if !errors.Is(opfsErr(ret), syscall.EACCES) {
+			logger.LogIf(nil, fmt.Errorf("SetAcl setattr %v fail err %v", path, opfsErr(ret)))
+		}
 		return opfsErr(ret)
 	}
 	return nil
@@ -438,7 +443,9 @@ func GetAcl(path string) ([]AclGrant, error) {
 	var acecnt C.uint32_t
 	ret := C.ofapi_aclqry(fd, &oace, &acecnt)
 	if ret != cok {
-		logger.LogIf(nil, fmt.Errorf("GetAcl aclqry %v fail %v", path, opfsErr(ret)))
+		if !errors.Is(opfsErr(ret), syscall.EACCES) {
+			logger.LogIf(nil, fmt.Errorf("GetAcl aclqry %v fail %v", path, opfsErr(ret)))
+		}
 		return []AclGrant{}, opfsErr(ret)
 	}
 
@@ -490,7 +497,7 @@ func GetOwner(path string) (uid, gid int, err error) {
 	}
 	return int(oatt.oa_uid), int(oatt.oa_gid), nil
 }
-func MakeDirAll(path string, mode os.FileMode) error {
+func MakeDirAll(path string, perm os.FileMode) error {
 	path = strings.TrimPrefix(strings.TrimSuffix(path, SlashSeparator), root.rootpath)
 	path = strings.TrimPrefix(path, SlashSeparator)
 	ipaths := strings.Split(path, SlashSeparator)
@@ -498,7 +505,7 @@ func MakeDirAll(path string, mode os.FileMode) error {
 	p.WriteString(root.rootpath)
 	for _, s := range ipaths {
 		dirPath := p.String() + SlashSeparator + s
-		err := MakeDir(dirPath)
+		err := MakeDir(dirPath, perm)
 		if err != nil && !errors.Is(err, os.ErrExist) {
 			return err
 		}

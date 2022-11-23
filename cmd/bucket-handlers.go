@@ -1276,7 +1276,12 @@ func (api objectAPIHandlers) HeadBucketHandler(w http.ResponseWriter, r *http.Re
 
 	ctx, s3Error := newOpfsContext(ctx, r)
 	if s3Error != ErrNone {
-		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
+		writeErrorResponseHeadersOnly(w, errorCodes.ToAPIErr(s3Error))
+		return
+	}
+
+	if err := checkOpfsReadPermission(ctx, objectAPI, bucket, ""); err != nil {
+		writeErrorResponseHeadersOnly(w, toAPIError(ctx, err))
 		return
 	}
 

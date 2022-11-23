@@ -42,13 +42,13 @@ const (
 )
 
 // Returns EXPORT/.minio.sys/multipart/SHA256/UPLOADID
-func (ofs *OPFSObjects) getUploadIDDir(bucket, object, uploadID string) string {
-	return pathJoin(ofs.fsPath, minioMetaMultipartBucket, getSHA256Hash([]byte(pathJoin(bucket, object))), uploadID)
+func (ofs *OPFSObjects) getUploadIDDir(bucket, uploadID string) string {
+	return pathJoin(ofs.fsPath, minioMetaMultipartBucket, getSHA256Hash([]byte(bucket)), uploadID)
 }
 
 // Returns EXPORT/.minio.sys/multipart/SHA256
-func (ofs *OPFSObjects) getMultipartSHADir(bucket, object string) string {
-	return pathJoin(ofs.fsPath, minioMetaMultipartBucket, getSHA256Hash([]byte(pathJoin(bucket, object))))
+func (ofs *OPFSObjects) getMultipartSHADir(bucket string) string {
+	return pathJoin(ofs.fsPath, minioMetaMultipartBucket, getSHA256Hash([]byte(bucket)))
 }
 
 // Returns partNumber.etag
@@ -91,7 +91,7 @@ func (ofs *OPFSObjects) backgroundAppend(ctx context.Context, bucket, object, up
 
 	// Since we append sequentially nextPartNumber will always be len(file.parts)+1
 	nextPartNumber := len(file.parts) + 1
-	uploadIDDir := ofs.getUploadIDDir(bucket, object, uploadID)
+	uploadIDDir := ofs.getUploadIDDir(bucket, uploadID)
 
 	entries, err := opfsReadDir(uploadIDDir)
 	if err != nil {
@@ -120,11 +120,13 @@ func (ofs *OPFSObjects) backgroundAppend(ctx context.Context, bucket, object, up
 		}
 
 		partPath := pathJoin(uploadIDDir, entry)
-		err = opfsAppendFile(file.filePath, partPath, globalFSOSync)
+		err = opfsAppendFileWithCred(ctx, file.filePath, partPath, globalFSOSync)
 		if err != nil {
 			reqInfo := logger.GetReqInfo(ctx).AppendTags("partPath", partPath)
 			reqInfo.AppendTags("filepath", file.filePath)
-			logger.LogIf(ctx, err)
+			if !errors.Is(err, os.ErrNotExist) {
+				logger.LogIf(ctx, err)
+			}
 			return
 		}
 
@@ -144,6 +146,10 @@ func (ofs *OPFSObjects) ListMultipartUploads(ctx context.Context, bucket, object
 		return result, toObjectErr(err, bucket)
 	}
 
+	if err := ofs.checkListBucketPermission(ctx, bucket); err != nil {
+		return result, err
+	}
+
 	result.MaxUploads = maxUploads
 	result.KeyMarker = keyMarker
 	result.Prefix = object
@@ -151,7 +157,7 @@ func (ofs *OPFSObjects) ListMultipartUploads(ctx context.Context, bucket, object
 	result.NextKeyMarker = object
 	result.UploadIDMarker = uploadIDMarker
 
-	uploadIDs, err := opfsReadDir(ofs.getMultipartSHADir(bucket, object))
+	uploadIDs, err := opfsReadDirWithCred(ctx, ofs.getMultipartSHADir(bucket), readDirOpts{count: -1})
 	if err != nil {
 		if err == errFileNotFound {
 			result.IsTruncated = false
@@ -165,7 +171,7 @@ func (ofs *OPFSObjects) ListMultipartUploads(ctx context.Context, bucket, object
 	// is the creation time of the uploadID, hence we will use that.
 	var uploads []MultipartInfo
 	for _, uploadID := range uploadIDs {
-		metaFilePath := pathJoin(ofs.getMultipartSHADir(bucket, object), uploadID, ofs.metaJSONFile)
+		metaFilePath := pathJoin(ofs.getMultipartSHADir(bucket), uploadID, ofs.metaJSONFile)
 		fi, err := opfsStatFile(ctx, metaFilePath)
 		if err != nil {
 			return result, toObjectErr(err, bucket, object)
@@ -227,10 +233,14 @@ func (ofs *OPFSObjects) NewMultipartUpload(ctx context.Context, bucket, object s
 		return "", toObjectErr(err, bucket)
 	}
 
-	uploadID := mustGetUUID()
-	uploadIDDir := ofs.getUploadIDDir(bucket, object, uploadID)
+	if err := ofs.checkWritePermission(ctx, bucket, object); err != nil {
+		return "", err
+	}
 
-	err := opfsMkdirAll(uploadIDDir, 0o755)
+	uploadID := mustGetUUID()
+	uploadIDDir := ofs.getUploadIDDir(bucket, uploadID)
+
+	err := opfsMkdirAllWithCred(ctx, uploadIDDir, 0o777)
 	if err != nil {
 		logger.LogIf(ctx, err)
 		return "", err
@@ -250,7 +260,12 @@ func (ofs *OPFSObjects) NewMultipartUpload(ctx context.Context, bucket, object s
 		logger.LogIf(ctx, err)
 		return "", err
 	}
-	ge := grantsToEncode(opts.AclGrant)
+	var ge []grantEncode
+	if len(opts.AclGrant) == 0 {
+		ge = grantsToEncode(defaultGrant(ctx))
+	} else {
+		ge = grantsToEncode(opts.AclGrant)
+	}
 	aclXMLBytes, err := xml.Marshal(ge)
 	if err != nil {
 		logger.LogIf(ctx, err)
@@ -313,13 +328,17 @@ func (ofs *OPFSObjects) PutObjectPart(ctx context.Context, bucket, object, uploa
 		return pi, toObjectErr(err, bucket)
 	}
 
+	if err := ofs.checkWritePermission(ctx, bucket, object); err != nil {
+		return pi, err
+	}
+
 	// Validate input data size and it can never be less than -1.
 	if data.Size() < -1 {
 		logger.LogIf(ctx, errInvalidArgument, logger.Application)
 		return pi, toObjectErr(errInvalidArgument)
 	}
 
-	uploadIDDir := ofs.getUploadIDDir(bucket, object, uploadID)
+	uploadIDDir := ofs.getUploadIDDir(bucket, uploadID)
 
 	// Just check if the uploadID exists to avoid copy if it doesn't.
 	_, err := opfsStatFile(ctx, pathJoin(uploadIDDir, ofs.metaJSONFile))
@@ -331,7 +350,7 @@ func (ofs *OPFSObjects) PutObjectPart(ctx context.Context, bucket, object, uploa
 	}
 
 	tmpPartPath := pathJoin(ofs.fsPath, minioMetaTmpBucket, ofs.fsUUID, uploadID+"."+mustGetUUID()+"."+strconv.Itoa(partID))
-	bytesWritten, err := opfsCreateFile(ctx, tmpPartPath, data, data.Size())
+	bytesWritten, err := opfsCreateFileWithCred(ctx, tmpPartPath, data, data.Size())
 
 	// Delete temporary part in case of failure. If
 	// PutObjectPart succeeds then there would be nothing to
@@ -399,7 +418,7 @@ func (ofs *OPFSObjects) GetMultipartInfo(ctx context.Context, bucket, object, up
 		return minfo, toObjectErr(err, bucket)
 	}
 
-	uploadIDDir := ofs.getUploadIDDir(bucket, object, uploadID)
+	uploadIDDir := ofs.getUploadIDDir(bucket, uploadID)
 	if _, err := opfsStatFile(ctx, pathJoin(uploadIDDir, ofs.metaJSONFile)); err != nil {
 		if err == errFileNotFound || err == errFileAccessDenied {
 			return minfo, InvalidUploadID{Bucket: bucket, Object: object, UploadID: uploadID}
@@ -445,7 +464,7 @@ func (ofs *OPFSObjects) ListObjectParts(ctx context.Context, bucket, object, upl
 		return result, toObjectErr(err, bucket)
 	}
 
-	uploadIDDir := ofs.getUploadIDDir(bucket, object, uploadID)
+	uploadIDDir := ofs.getUploadIDDir(bucket, uploadID)
 	if _, err := opfsStatFile(ctx, pathJoin(uploadIDDir, ofs.metaJSONFile)); err != nil {
 		if err == errFileNotFound || err == errFileAccessDenied {
 			return result, InvalidUploadID{Bucket: bucket, Object: object, UploadID: uploadID}
@@ -570,7 +589,7 @@ func (ofs *OPFSObjects) CompleteMultipartUpload(ctx context.Context, bucket stri
 	}
 	defer NSUpdated(bucket, object)
 
-	uploadIDDir := ofs.getUploadIDDir(bucket, object, uploadID)
+	uploadIDDir := ofs.getUploadIDDir(bucket, uploadID)
 	// Just check if the uploadID exists to avoid copy if it doesn't.
 	_, err := opfsStatFile(ctx, pathJoin(uploadIDDir, ofs.metaJSONFile))
 	if err != nil {
@@ -708,7 +727,7 @@ func (ofs *OPFSObjects) CompleteMultipartUpload(ctx context.Context, bucket stri
 					GotETag:    part.ETag,
 				}
 			}
-			if err = opfsAppendFile(appendFilePath, pathJoin(uploadIDDir, partFile), globalFSOSync); err != nil {
+			if err = opfsAppendFileWithCred(ctx, appendFilePath, pathJoin(uploadIDDir, partFile), globalFSOSync); err != nil {
 				logger.LogIf(ctx, err)
 				return oi, toObjectErr(err)
 			}
@@ -786,28 +805,26 @@ func (ofs *OPFSObjects) CompleteMultipartUpload(ctx context.Context, bucket stri
 		logger.LogIf(ctx, err)
 		return oi, toObjectErr(err, bucket, object)
 	}
-	ge := make([]grantEncode, 0)
+	gd := make([]grantDecode, 0)
 	if len(aclXMLBuf) != 0 {
-		err = xml.Unmarshal(aclXMLBuf, &ge)
+		err = xml.Unmarshal(aclXMLBuf, &gd)
 		if err != nil {
 			logger.LogIf(ctx, err)
 			return oi, toObjectErr(err, bucket, object)
 		}
 	}
 
-	acl := EncodeTogrants(ge)
+	acl := DecodeTogrants(gd)
 
 	if err = ofs.checkWritePermission(ctx, bucket, object); err != nil {
-		logger.LogIf(ctx, err)
 		return oi, toObjectErr(err, bucket, object)
 	}
 	err = opfsRenameFileWithCred(ctx, appendFilePath, pathJoin(ofs.fsPath, bucket, object))
 	if err != nil {
-		logger.LogIf(ctx, err)
 		return oi, toObjectErr(err, bucket, object)
 	}
+
 	if err := ofs.setObjectAcl(ctx, bucket, object, acl); err != nil {
-		logger.LogIf(ctx, err)
 		return oi, toObjectErr(err, bucket, object)
 	}
 
@@ -819,7 +836,7 @@ func (ofs *OPFSObjects) CompleteMultipartUpload(ctx context.Context, bucket stri
 		opfsRename(uploadIDDir, fsTmpObjPath)
 
 		// It is safe to ignore any directory not empty error (in case there were multiple uploadIDs on the same object)
-		opfsRemoveDir(ctx, ofs.getMultipartSHADir(bucket, object))
+		opfsRemoveDir(ctx, ofs.getMultipartSHADir(bucket))
 	}
 
 	fi, err := opfsStatFile(ctx, pathJoin(ofs.fsPath, bucket, object))
@@ -860,7 +877,7 @@ func (ofs *OPFSObjects) AbortMultipartUpload(ctx context.Context, bucket, object
 	delete(ofs.appendFileMap, uploadID)
 	ofs.appendFileMapMu.Unlock()
 
-	uploadIDDir := ofs.getUploadIDDir(bucket, object, uploadID)
+	uploadIDDir := ofs.getUploadIDDir(bucket, uploadID)
 	// Just check if the uploadID exists to avoid copy if it doesn't.
 	_, err := opfsStatFile(ctx, pathJoin(uploadIDDir, ofs.metaJSONFile))
 	if err != nil {
@@ -878,7 +895,7 @@ func (ofs *OPFSObjects) AbortMultipartUpload(ctx context.Context, bucket, object
 		opfsRename(uploadIDDir, fsTmpObjPath)
 
 		// It is safe to ignore any directory not empty error (in case there were multiple uploadIDs on the same object)
-		opfsRemoveDir(ctx, ofs.getMultipartSHADir(bucket, object))
+		opfsRemoveDir(ctx, ofs.getMultipartSHADir(bucket))
 	}
 
 	return nil
