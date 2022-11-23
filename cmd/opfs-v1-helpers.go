@@ -672,8 +672,10 @@ func getOpfsCred(ctx context.Context) (uid int, gids []int, err error) {
 		logger.LogIf(ctx, errNoCred)
 		return uid, gids, errNoCred
 	}
-	if uid, ok := claims[UserID].(int); !ok {
+	if userid, ok := claims[UserID].(int); !ok {
 		return uid, gids, errInvalidArgument
+	} else {
+		uid = userid
 	}
 	if gid, ok := claims[GroupID].(int); !ok {
 		return uid, gids, errInvalidArgument

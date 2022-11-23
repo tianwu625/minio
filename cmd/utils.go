@@ -835,16 +835,33 @@ func newContext(r *http.Request, w http.ResponseWriter, api string) context.Cont
 	return logger.SetReqInfo(r.Context(), reqInfo)
 }
 
+func rootClaims() map[string]interface{} {
+	claims := make(map[string]interface{})
+	claims[UserID] = 0
+	claims[GroupID] = 0
+	return claims
+}
+
 func newOpfsContext(ctx context.Context, r *http.Request) (rctx context.Context, s3Err APIErrorCode) {
 	cred, s3err := getRequestAuthTypeCredential(ctx, r)
 	if s3err != ErrNone {
 		return ctx, s3err
 	}
 	if cred.AccessKey == globalActiveCred.AccessKey && globalGatewayName == OPFSBackendGateway {
-		claims := make(map[string]interface{})
-		claims[UserID] = 0
-		claims[GroupID] = 0
-		return context.WithValue(ctx, opfsCredKey, claims), ErrNone
+		return context.WithValue(ctx, opfsCredKey, rootClaims()), ErrNone
+	}
+	if cred.IsTemp() || cred.IsServiceAccount() {
+		if cred.ParentUser == globalActiveCred.AccessKey {
+			return context.WithValue(ctx, opfsCredKey, rootClaims()), ErrNone
+		}
+		pcred, ok := globalIAMSys.GetUser(GlobalContext, cred.ParentUser)
+		if !ok {
+			return ctx, ErrAdminServiceAccountNotFound
+		}
+		if pcred.IsOPFSAccount() {
+			return context.WithValue(ctx, opfsCredKey, pcred.Claims), ErrNone
+		}
+		return ctx, ErrNone
 	}
 	if !cred.IsOPFSAccount() {
 		return ctx, ErrNone
@@ -858,10 +875,20 @@ func newOpfsContextPutAction(ctx context.Context, r *http.Request) (rctx context
 		return ctx, s3err
 	}
 	if cred.AccessKey == globalActiveCred.AccessKey && globalGatewayName == OPFSBackendGateway {
-		claims := make(map[string]interface{})
-		claims[UserID] = 0
-		claims[GroupID] = 0
-		return context.WithValue(ctx, opfsCredKey, claims), ErrNone
+		return context.WithValue(ctx, opfsCredKey, rootClaims()), ErrNone
+	}
+	if cred.IsTemp() || cred.IsServiceAccount() {
+		if cred.ParentUser == globalActiveCred.AccessKey {
+			return context.WithValue(ctx, opfsCredKey, rootClaims()), ErrNone
+		}
+		pcred, ok := globalIAMSys.GetUser(GlobalContext, cred.ParentUser)
+		if !ok {
+			return ctx, ErrAdminServiceAccountNotFound
+		}
+		if pcred.IsOPFSAccount() {
+			return context.WithValue(ctx, opfsCredKey, pcred.Claims), ErrNone
+		}
+		return ctx, ErrNone
 	}
 	if !cred.IsOPFSAccount() {
 		return ctx, ErrNone
