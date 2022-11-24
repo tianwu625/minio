@@ -776,7 +776,7 @@ func handleCommonEnvVars() {
 		hasCredentials = true
 	}
 	if hasCredentials {
-		cred, err := auth.CreateCredentials(user, password)
+		cred, err := auth.CreateSignOnCredentials(user, password)
 		if err != nil {
 			logger.Fatal(config.ErrInvalidCredentials(err),
 				"Unable to validate credentials inherited from the shell environment")

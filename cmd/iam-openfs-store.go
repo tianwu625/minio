@@ -203,12 +203,7 @@ const (
 	GroupIDs = "groupids"
 )
 
-func createUserIdentityfromOPFS(u OpfsUser) (*auth.Credentials, error) {
-	cred, err := auth.CreateSignOnCredentials(u.Name, "fake-password")
-	if err != nil {
-		logger.LogIf(nil, fmt.Errorf("accessKey=%v, uid=%v", u.Name, u.Uid))
-		return nil, err
-	}
+func createClaims(u OpfsUser) map[string]interface{} {
 	claims := make(map[string]interface{})
 	claims[UserID] = u.Uid
 	claims[GroupID] = u.Pgroup.Gid
@@ -217,7 +212,17 @@ func createUserIdentityfromOPFS(u OpfsUser) (*auth.Credentials, error) {
 		gids = append(gids, opfsgid.Gid)
 	}
 	claims[GroupIDs] = gids
-	cred.Claims = claims
+
+	return claims
+}
+
+func createUserIdentityfromOPFS(u OpfsUser) (*auth.Credentials, error) {
+	cred, err := auth.CreateSignOnCredentials(u.Name, "fake-password")
+	if err != nil {
+		logger.LogIf(nil, fmt.Errorf("accessKey=%v, uid=%v", u.Name, u.Uid))
+		return nil, err
+	}
+	cred.Claims = createClaims(u)
 	return &cred, nil
 }
 
@@ -357,6 +362,13 @@ func (iamOpfs *IAMOpfsStore) loadUsers(ctx context.Context, userType IAMUserType
 		}
 
 		for _, u := range users {
+			//FIXME admin to globalActiveCred
+			if u.Utype == "Admin" {
+				globalActiveCred.Claims = createClaims(u)
+				globalActiveCred.Claims["usercanionialid"] = globalMinioDefaultOwnerID
+				m[globalActiveCred.AccessKey] = globalActiveCred
+				continue
+			}
 			cred, err := createUserIdentityfromOPFS(u)
 			if err != nil {
 				logger.LogIf(ctx, fmt.Errorf("err %v", err))

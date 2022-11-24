@@ -179,7 +179,10 @@ func (cred Credentials) IsValid() bool {
 	if cred.Status == AccountOff {
 		return false
 	}
-	return IsAccessKeyValid(cred.AccessKey) && IsSecretKeyValid(cred.SecretKey) && !cred.IsExpired()
+	if cred.IsTemp() || cred.IsServiceAccount() {
+		return IsAccessKeyValid(cred.AccessKey) && IsSecretKeyValid(cred.SecretKey) && !cred.IsExpired()
+	}
+	return IsUsernameValid(cred.AccessKey) && IsPasswordValid(cred.SecretKey)
 }
 
 // Equal - returns whether two credentials are equal or not.
