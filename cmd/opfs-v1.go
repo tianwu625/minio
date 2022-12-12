@@ -1808,6 +1808,9 @@ func checkOpfsReadPermission(ctx context.Context, objAPI ObjectLayer, bucket, ob
 	if err != nil {
 		return err
 	}
+	if uid == 0 {
+		return nil
+	}
 	rootCtx := newOpfsRoot(ctx)
 
 	grants, err := aclAPI.GetAcl(rootCtx, bucket, object)

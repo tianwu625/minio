@@ -2096,6 +2096,9 @@ func (store *IAMStoreSys) GetGroupIdByName(gname string) (int, error) {
 }
 
 func (store *IAMStoreSys) GetCanionialIdByUid(uid int) (string, error) {
+	if uid == 0 {
+		return globalMinioDefaultOwnerID, nil
+	}
 	cache := store.lock()
 	defer store.unlock()
 	for _, ucred := range cache.iamUsersMap {
