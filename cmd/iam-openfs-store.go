@@ -23,8 +23,8 @@ import (
 
 const (
 	OpfsCmdDir              = "/usr/libexec/openfs"
-	OpfsUserCmd             = "/openfs_auth_user_json"
-	OpfsGroupCmd            = "/openfs_auth_group_json"
+	OpfsUserCmd             = "/openfs-auth-user-json"
+	OpfsGroupCmd            = "/openfs-auth-group-json"
 	OpfsPrefix              = "openfs"
 	OpfsCanionicalKeyLen    = 32
 	OpfsCanionicalUserIDLen = 64
@@ -47,11 +47,6 @@ type OpfsUser struct {
 	Uid     int           `json:"uid"`
 }
 
-type UserResult struct {
-	Ret   int        `json:"ret"`
-	Users []OpfsUser `json:"users,omitempty"`
-}
-
 type OpfsUserId struct {
 	Uid  int    `json:"uid"`
 	Name string `json:"name"`
@@ -63,11 +58,6 @@ type OpfsGroup struct {
 	Gtype   string       `json:"type"`
 	Gid     int          `json:"gid"`
 	Users   []OpfsUserId `json:"users,omitempty"`
-}
-
-type GroupResult struct {
-	Ret    int         `json:"ret"`
-	Groups []OpfsGroup `json:"groups, omitempty"`
 }
 
 type MappedUserID struct {
@@ -173,12 +163,10 @@ func loadOPFSUsers(ctx context.Context, cmdPath string) ([]OpfsUser, error) {
 
 	json := jsoniter.ConfigCompatibleWithStandardLibrary
 
-	var res UserResult
+	res := make([]OpfsUser, 0)
 	json.Unmarshal(output, &res)
-	if res.Ret != 0 {
-		return []OpfsUser{}, fmt.Errorf("get opfs auth user failed")
-	}
-	return res.Users, nil
+
+	return res, nil
 }
 
 func loadOPFSGroups(ctx context.Context, cmdPath string) ([]OpfsGroup, error) {
@@ -188,13 +176,10 @@ func loadOPFSGroups(ctx context.Context, cmdPath string) ([]OpfsGroup, error) {
 
 	json := jsoniter.ConfigCompatibleWithStandardLibrary
 
-	var res GroupResult
+	res := make([]OpfsGroup, 0)
 	json.Unmarshal(output, &res)
-	if res.Ret != 0 {
-		return []OpfsGroup{}, fmt.Errorf("get opfs auth group failed")
-	}
 
-	return res.Groups, nil
+	return res, nil
 }
 
 const (
